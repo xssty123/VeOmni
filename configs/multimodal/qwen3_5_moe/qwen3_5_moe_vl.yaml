@@ -3,7 +3,19 @@ model:
   ops_implementation:
     attn_implementation: flash_attention_2
     moe_implementation: fused_triton
-
+    cross_entropy_loss_implementation: chunk_loss
+    rms_norm_implementation: npu
+    rotary_pos_emb_implementation: npu
+    swiglu_mlp_implementation: eager           # no NPU backend
+    load_balancing_loss_implementation: eager  # triton-ascend not exposed as `triton`
+    # Qwen3.5 GatedDeltaNet trio — only meaningful for Qwen3.5 MoE; pin to
+    # eager on NPU (no NPU kernel) and set train.dyn_bsz=False (eager path
+    # only supports non-varlen training):
+    rms_norm_gated_implementation: eager
+    moe_implementation: fused
+    causal_conv1d_implementation: eager
+    chunk_gated_delta_rule_implementation: eager
+    
 data:
   train_path: configs/multimodal/data/tulu_sharegpt4v_llavavideo.yaml
   data_type: conversation
