@@ -611,6 +611,9 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
         # for varlen training; the decode-only `*_update` aliases are kept None
         # because the precomputed-state path raises NotImplementedError anyway.
         self.causal_conv1d_fn = veomni_causal_conv1d.bound_kernel()
+        from veomni.models.transformers.qwen3_5_moe.generated.causal_conv1d import causal_conv1d
+        logger.warning_once("Qwen3_5Moe causal_conv1d use NPU triton ops")
+        self.causal_conv1d_fn = causal_conv1d
         self.causal_conv1d_update = causal_conv1d_update or torch_causal_conv1d_update
         self.chunk_gated_delta_rule = veomni_chunk_gated_delta_rule.bound_kernel() or torch_chunk_gated_delta_rule
         self.recurrent_gated_delta_rule = fused_recurrent_gated_delta_rule or torch_recurrent_gated_delta_rule
@@ -723,15 +726,13 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
                 else:
                     conv_weight = self.conv1d.weight.squeeze(1)
                 # mixed_qkv is [B, S, D] — FLA causal_conv1d expects [B, S, D].
-                mixed_qkv = self.causal_conv1d_fn(
+                mixed_qkv, _ = self.causal_conv1d_fn(
                     x=mixed_qkv,
-                    weight=conv_weight,
+                    weight=conv_weight.transpose(-1, -2).contiguous(),
                     bias=self.conv1d.bias,
                     activation=self.activation,
-                    seq_idx=None,
-                    backend="triton",
                     cu_seqlens=cu_seq_lens_q.npu(),
-                )[0]
+                )
             else:
                 raise NotImplementedError("This path is not supported yet because it can't process varlen now.")
 
@@ -765,6 +766,8 @@ class Qwen3_5MoeGatedDeltaNet(nn.Module):
 
         if not use_precomputed_states:
             # Modification: instance-local guard (see GPU patch comment).
+            from veomni.npu_ops.gdn.chunk_gated_delta_rule import chunk_gated_delta_rule
+            self.chunk_gated_delta_rule = chunk_gated_delta_rule
             if self.chunk_gated_delta_rule is torch_chunk_gated_delta_rule:
                 raise RuntimeError(
                     "Varlen Qwen3.5 GatedDeltaNet training is GPU-only — NPU has no fla/flash_qla "
