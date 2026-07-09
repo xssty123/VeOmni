@@ -1157,6 +1157,20 @@ class DataArguments:
             "help": "Number of samples for training to compute training steps for non-dynamic batch dataloader."
         },
     )
+    use_dummy_text: bool = field(
+        default=False,
+        metadata={
+            "help": "Use synthetic random-token text (DummyTextDataset) for perf benchmark; "
+            "bypasses the real data pipeline (no tokenize / chat template / disk I/O)."
+        },
+    )
+    num_dummy_images: int = field(
+        default=0,
+        metadata={
+            "help": "When use_dummy_text, images per sample: 0=pure text; "
+            "10=10x 1024x1024 images/sample (MM-style VL benchmark)."
+        },
+    )
     data_type: Literal["plaintext", "conversation", "diffusion", "classification", "dpo"] = field(
         default="conversation",
         metadata={"help": "Type of the training data."},
@@ -1196,7 +1210,7 @@ class DataArguments:
     dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
 
     def __post_init__(self):
-        self.enable_multisource = self.train_path.endswith(".yaml")
+        self.enable_multisource = self.train_path.endswith(".yaml") and not self.use_dummy_text
 
         if self.enable_multisource:
             self.dataset_name = self.multisource_datasets_type

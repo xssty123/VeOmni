@@ -50,29 +50,44 @@ class DummyTextDataset(Dataset):
 
 class DummyQwenVLDataset(Dataset):
     def __init__(
-        self, size: int, seq_length: int, patch_size: int = 14, temporal_patch_size: int = 2, merge_size: int = 2
+        self,
+        size: int,
+        seq_length: int,
+        patch_size: int = 14,
+        temporal_patch_size: int = 2,
+        merge_size: int = 2,
+        num_images: int = 2,
+        image_hw: int = 4,
+        enable_video: bool = True,
     ):
         """
         Args:
             size (int): Nums of datasets
             seq_length (int, optional): seq_length
+            num_images (int): images per sample (image_t).
+            image_hw (int): image side in patches; 1024x1024 with patch_size=16 -> 64.
+            enable_video (bool): include a dummy video per sample.
         """
         self.size = size
         self.seq_length = seq_length
         self.vocab_size = 1024
+        self.enable_video = enable_video
 
-        image_t = 2
+        image_t = num_images
         video_t = 10
-        h, w = 4, 4
+        h, w = image_hw, image_hw
         channel_size = 3
 
         self.image_size = [image_t * h * w, patch_size * patch_size * temporal_patch_size * channel_size]
         self.image_grid_thw = torch.tensor([[1, h, w]] * image_t, dtype=torch.long)
         self.image_seqlen = h * w // (merge_size**2) * image_t
 
-        self.video_size = [video_t * h * w, patch_size * patch_size * temporal_patch_size * channel_size]
-        self.video_grid_thw = torch.tensor([[video_t, h, w]], dtype=torch.long)
-        self.video_seqlen = h * w // (merge_size**2) * video_t
+        if enable_video:
+            self.video_size = [video_t * h * w, patch_size * patch_size * temporal_patch_size * channel_size]
+            self.video_grid_thw = torch.tensor([[video_t, h, w]], dtype=torch.long)
+            self.video_seqlen = h * w // (merge_size**2) * video_t
+        else:
+            self.video_seqlen = 0
 
         self.text_seqlen = self.seq_length - self.image_seqlen - self.video_seqlen
 
@@ -80,8 +95,9 @@ class DummyQwenVLDataset(Dataset):
         mask = torch.zeros((self.seq_length,), dtype=torch.bool)
         self.image_mask = mask.clone()
         self.image_mask[: self.image_seqlen] = 1
-        self.video_mask = mask.clone()
-        self.video_mask[-self.video_seqlen :] = 1
+        if enable_video:
+            self.video_mask = mask.clone()
+            self.video_mask[-self.video_seqlen :] = 1
 
     def __len__(self) -> int:
         return self.size
@@ -93,21 +109,20 @@ class DummyQwenVLDataset(Dataset):
         labels[0] = IGNORE_INDEX
         position_ids = torch.arange(0, self.seq_length).unsqueeze(0).repeat(3, 1)
         pixel_values = torch.rand(self.image_size, dtype=torch.float32)
-        pixel_values_videos = torch.rand(self.video_size, dtype=torch.float32)
-        return [
-            {
-                "input_ids": input_ids,
-                "attention_mask": attention_mask,
-                "labels": labels,
-                "position_ids": position_ids,
-                "pixel_values": pixel_values,
-                "pixel_values_videos": pixel_values_videos,
-                "image_mask": self.image_mask,
-                "video_mask": self.video_mask,
-                "image_grid_thw": self.image_grid_thw,
-                "video_grid_thw": self.video_grid_thw,
-            }
-        ]
+        sample = {
+            "input_ids": input_ids,
+            "attention_mask": attention_mask,
+            "labels": labels,
+            "position_ids": position_ids,
+            "pixel_values": pixel_values,
+            "image_mask": self.image_mask,
+            "image_grid_thw": self.image_grid_thw,
+        }
+        if self.enable_video:
+            sample["pixel_values_videos"] = torch.rand(self.video_size, dtype=torch.float32)
+            sample["video_mask"] = self.video_mask
+            sample["video_grid_thw"] = self.video_grid_thw
+        return [sample]
 
 
 class DummyQwenOmniDataset(Dataset):
@@ -424,9 +439,19 @@ class QwenImageDataset(Dataset):
         ]
 
 
-def build_dummy_dataset(task_type: str, size: int, max_seq_len: int) -> "Dataset":
+def build_dummy_dataset(task_type: str, size: int, max_seq_len: int, num_images: int = 10) -> "Dataset":
     if task_type == "text":
         return DummyTextDataset(size=size, seq_length=max_seq_len)
+    elif task_type == "qwen3_5vl":
+        # MM-style VL perf benchmark: num_images x 1024x1024 (64x64 patches), no video.
+        return DummyQwenVLDataset(
+            size=size,
+            seq_length=max_seq_len,
+            patch_size=16,
+            num_images=num_images,
+            image_hw=64,
+            enable_video=False,
+        )
     elif task_type == "qwen2vl":
         return DummyQwenVLDataset(size=size, seq_length=max_seq_len, patch_size=14)
     elif task_type == "qwen3vl":

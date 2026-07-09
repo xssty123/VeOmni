@@ -436,12 +436,26 @@ class BaseTrainer(Stateful, ABC):
     def _build_dataset(self):
         args: VeOmniArguments = self.args
         # Build dataset
-        self.train_dataset = build_dataset(
-            dataset_name=args.data.dataset_name,
-            transform=self.data_transform,
-            seed=args.train.seed,
-            **asdict(args.data),
-        )
+        if getattr(args.data, "use_dummy_text", False):
+            # Synthetic random-token text for perf benchmark: bypasses the real
+            # data pipeline (no tokenize / chat template / disk I/O). Matches the
+            # "virtual dataset" methodology used by MindSpeed-MM benchmarks.
+            from ..data import build_dummy_dataset
+
+            num_dummy_images = getattr(args.data, "num_dummy_images", 0)
+            self.train_dataset = build_dummy_dataset(
+                task_type="qwen3_5vl" if num_dummy_images > 0 else "text",
+                size=args.data.train_sample,
+                max_seq_len=args.data.max_seq_len,
+                num_images=num_dummy_images,
+            )
+        else:
+            self.train_dataset = build_dataset(
+                dataset_name=args.data.dataset_name,
+                transform=self.data_transform,
+                seed=args.train.seed,
+                **asdict(args.data),
+            )
         dataset_length = None if not hasattr(self.train_dataset, "__len__") else len(self.train_dataset)
         if args.data.datasets_type == "mapping":
             dataset_length = dataset_length / args.train.accelerator.dp_size
