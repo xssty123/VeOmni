@@ -1,0 +1,41 @@
+# Build tooling — not needed inside the image. Keeping docker/ (and .git) out of
+# the context means editing a Dockerfile no longer invalidates the `COPY . ./`
+# layer that sits before `uv sync`, so dependency install stays cached across
+# Dockerfile iterations. The `-f` Dockerfile is still read regardless of this.
+docker/
+
+# VCS & tooling caches (change constantly, would thrash the COPY cache)
+.git
+.github
+**/__pycache__/
+*.pyc
+.ruff_cache
+
+# Host venv — the image builds its own via uv sync; a host venv is the wrong arch
+.venv
+
+# Secrets / local env — must never be baked into an image layer
+.env*
+
+# Agent / IDE configs
+.claude
+.cursor
+.gemini
+
+# Data / weights / checkpoints / outputs / logs — adjust to your actual dir names
+data/
+datasets/
+checkpoints/
+ckpt/
+outputs/
+logs/
+logfile
+*.log
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+
+# Scratch / debug notes
+*_retrospective.md
