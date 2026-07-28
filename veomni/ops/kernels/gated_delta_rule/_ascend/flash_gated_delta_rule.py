@@ -11,6 +11,12 @@ VeOmni adaptations vs. upstream (keep this list in sync when re-syncing):
 - Dropped MM's async-offload / ``skip_recompute`` machinery
   (``TrainingContext`` / ``OffloadManager`` / ``SwapTensor`` / ``get_current_stream``):
   VeOmni has no such framework, so only the plain compute path remains.
+- Varlen metadata (``cu_seqlens`` normalization, ``prepare_chunk_indices*``) is
+  memoized with ``tensor_cache`` so the per-layer rebuild — and the D2H sync it
+  carries — happens once per micro-batch instead of once per GDN layer. MM avoids
+  the same cost by precomputing the metadata outside the model and threading it
+  through the ``cu_seqlens_list`` / ``chunk_indices`` / ``chunk_indices_list``
+  arguments; those stay supported, VeOmni just does not need to use them.
 """
 
 import warnings
@@ -28,7 +34,7 @@ from .triton_core.l2norm import l2norm_bwd, l2norm_fwd
 from .triton.cumsum import chunk_local_cumsum
 from .triton_core.utils import autocast_custom_bwd, autocast_custom_fwd, input_guard
 
-from .triton.utils import is_arch35
+from .triton.utils import is_arch35, tensor_cache
 if is_arch35():
     from .triton_core.solve_tril import solve_tril
 else:
@@ -36,16 +42,41 @@ else:
 
 _disable_compile = getattr(getattr(torch, "compiler", None), "disable", lambda fn: fn)
 _DEFAULT_VARLEN_CHUNK_SIZES = (16, 32, 64, 128, 608 * 2)
+# One ``_ensure_varlen_metadata`` sweep touches every default chunk size plus the
+# caller's ``chunk_size`` and the cumsum block size, so the cache must hold a full
+# sweep at once — sized one short and the LRU evicts exactly the entry the next
+# layer asks for first, turning every lookup into a miss.
+_VARLEN_CACHE_MAXSIZE = len(_DEFAULT_VARLEN_CHUNK_SIZES) + 3
 
 
 def cdiv_torch(a, b):
     return (a + b - 1) // b
 
 
+@tensor_cache
+def _normalized_cu_seqlens(cu_seqlens: torch.Tensor, device: torch.device) -> torch.LongTensor:
+    """Cast ``cu_seqlens`` to the layout the kernels want, reusing one tensor per micro-batch.
+
+    Every GDN layer calls into this file with the same ``cu_seqlens`` object, so all
+    varlen metadata below is layer-invariant — but ``tensor_cache`` keys on tensor
+    *identity* (``a is b``), and the collator hands out int32 (FlashAttention requires
+    it), so a bare ``.to(dtype=torch.int64)`` would allocate a fresh tensor per layer
+    and miss every cache downstream, including the ones inside ``triton.utils`` that
+    ``chunk_local_cumsum`` and friends rely on. Memoizing the cast keeps one int64
+    tensor alive per micro-batch, so layers 2..N hit and pay no D2H sync.
+
+    ``.to`` returns ``self`` when the tensor already matches, so an already-normalized
+    input costs nothing and stays identity-stable on its own.
+    """
+    return cu_seqlens.to(device=device, dtype=torch.int64)
+
+
+@tensor_cache
 def prepare_lens(cu_seqlens: torch.LongTensor) -> torch.LongTensor:
     return cu_seqlens[1:] - cu_seqlens[:-1]
 
 
+@tensor_cache(maxsize=_VARLEN_CACHE_MAXSIZE)
 def prepare_chunk_indices(cu_seqlens: torch.LongTensor, chunk_size: int) -> torch.LongTensor:
     indices = torch.cat(
         [torch.arange(n) for n in cdiv_torch(prepare_lens(cu_seqlens), chunk_size).tolist()]
@@ -53,10 +84,18 @@ def prepare_chunk_indices(cu_seqlens: torch.LongTensor, chunk_size: int) -> torc
     return torch.stack([indices.eq(0).cumsum(0) - 1, indices], 1).to(cu_seqlens)
 
 
-def prepare_chunk_indices_list(cu_seqlens: list[int] | torch.LongTensor, chunk_size: int) -> list[int]:
-    if isinstance(cu_seqlens, torch.Tensor):
-        cu_seqlens = [int(x) for x in cu_seqlens.detach().cpu().tolist()]
+@tensor_cache(maxsize=2)
+def _cu_seqlens_to_int_list(cu_seqlens: torch.Tensor) -> list[int]:
+    """Host copy of ``cu_seqlens``. Cached because the ``.tolist()`` is a D2H sync.
 
+    Two entries so a caller that hands in both ``cu_seqlens`` and a tensor-valued
+    ``chunk_indices_list`` does not evict the ``cu_seqlens`` copy every layer.
+    """
+    return [int(x) for x in cu_seqlens.detach().cpu().flatten().tolist()]
+
+
+@tensor_cache(maxsize=_VARLEN_CACHE_MAXSIZE)
+def _prepare_chunk_indices_list_from_host(cu_seqlens: list[int], chunk_size: int) -> list[int]:
     indices: list[int] = []
     for seq_idx in range(len(cu_seqlens) - 1):
         length = int(cu_seqlens[seq_idx + 1]) - int(cu_seqlens[seq_idx])
@@ -67,11 +106,20 @@ def prepare_chunk_indices_list(cu_seqlens: list[int] | torch.LongTensor, chunk_s
     return indices
 
 
+def prepare_chunk_indices_list(cu_seqlens: list[int] | torch.LongTensor, chunk_size: int) -> list[int]:
+    if isinstance(cu_seqlens, torch.Tensor):
+        cu_seqlens = _cu_seqlens_to_int_list(cu_seqlens)
+    # The cached callee only ever sees a list, so ``tensor_cache`` compares by value
+    # (``a == b``) and never has to decide between a list and a tensor at the same
+    # argument position.
+    return _prepare_chunk_indices_list_from_host(cu_seqlens, chunk_size)
+
+
 def _as_int_list(value: Optional[list[int] | torch.Tensor]) -> Optional[list[int]]:
     if value is None:
         return None
     if isinstance(value, torch.Tensor):
-        return [int(x) for x in value.detach().cpu().flatten().tolist()]
+        return _cu_seqlens_to_int_list(value)
     return [int(x) for x in value]
 
 
@@ -124,7 +172,7 @@ def _ensure_varlen_metadata(
     if cu_seqlens is None:
         return None, None, None, None
 
-    cu_seqlens = cu_seqlens.to(device=g.device, dtype=torch.int64)
+    cu_seqlens = _normalized_cu_seqlens(cu_seqlens, g.device)
     cu_seqlens_list = _as_int_list(cu_seqlens_list) or _as_int_list(cu_seqlens)
     assert cu_seqlens_list is not None
 
