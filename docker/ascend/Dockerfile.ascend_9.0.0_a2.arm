@@ -41,6 +41,12 @@ COPY . .
 
 RUN pip install -e .[npu_aarch64]
 
+# Align the parquet/data stack with the uv lockfile. pip install -e (unlike x86's
+# uv sync --locked) ignores the lockfile and floats pyarrow/pandas to latest; pyarrow
+# 25 / pandas 3.x SEGFAULT reading parquet on aarch64 (datasets is pinned to 2.21, which
+# targets the older pyarrow ABI). Pin to the versions the x86 lockfile uses.
+RUN pip install "pyarrow==21.0.0" "pandas==2.3.2"
+
 # ============================================================================
 # GDN / fla_npu (AscendC fused ops) — ported from Dockerfile.ascend_9.0.0_a2.x86.
 # ⚠️ aarch64 + pip/root DRAFT, UNVALIDATED. The x86 recipe was validated on a 910b
