@@ -48,16 +48,17 @@ jobs:
       - name: Get image tag
         id: version
         run: |
-          # Tag scheme: {version}-cann{CANN}-torch_npu{torch_npu}-{product}-{os}-py{py}-veomni-latest
-          # e.g. v0.1.11-cann9.0.0-torch_npu2.10.0.post2-A3-ubuntu22.04-py3.11-veomni-latest
-          # -latest is a rolling (mutable) tag: re-runs overwrite it.
+          # Tag scheme: {version}-cann{CANN}-torch_npu{torch_npu}-{product}-{os}-py{py}-veomni
+          # e.g. v0.1.11-cann9.0.0-torch_npu2.10.0.post2-a3-ubuntu22.04-py3.11-veomni
+          # The tag is mutable: re-running the workflow on the same release tag overwrites it.
           BASE_TAG="${{ steps.base_image.outputs.base_image_tag }}"   # e.g. 9.0.0-a3-ubuntu22.04-py3.11
-          CANN=$(echo "$BASE_TAG" | cut -d'-' -f1)
-          OS=$(echo "$BASE_TAG"   | cut -d'-' -f3)
-          PY=$(echo "$BASE_TAG"   | cut -d'-' -f4)
+          CANN=$(echo "$BASE_TAG"    | cut -d'-' -f1)
+          PRODUCT=$(echo "$BASE_TAG" | cut -d'-' -f2)
+          OS=$(echo "$BASE_TAG"      | cut -d'-' -f3)
+          PY=$(echo "$BASE_TAG"      | cut -d'-' -f4)
           TORCH_NPU=$(grep -oiP 'torch-npu==\K[0-9a-z.]+' ./docker/ascend/Dockerfile.ascend_9.0.0_a3 | head -1)
           VERSION=$(git describe --tags --abbrev=0)   # latest release tag, e.g. v0.1.11
-          TAG="${VERSION}-cann${CANN}-torch_npu${TORCH_NPU}-A3-${OS}-${PY}-veomni-latest"
+          TAG="${VERSION}-cann${CANN}-torch_npu${TORCH_NPU}-${PRODUCT}-${OS}-${PY}-veomni"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
           echo "Final tag: ${TAG}"
 
