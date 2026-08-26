@@ -5,7 +5,7 @@ on:
   push:
     branches: [ "main" ]
     paths:
-      - "docker/ascend/Dockerfile.ascend_9.0.0_a3"
+      - "docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_a3"
       - ".github/workflows/docker-build-ascend-a3.yml"
   release:
     types: [ published ]
@@ -36,7 +36,7 @@ jobs:
       - name: Get base image name and tag
         id: base_image
         run: |
-          BASE_IMAGE_FULL=$(grep '^FROM' ./docker/ascend/Dockerfile.ascend_9.0.0_a3 | head -1 | cut -d' ' -f2)
+          BASE_IMAGE_FULL=$(grep '^FROM' ./docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_a3 | head -1 | cut -d' ' -f2)
           echo "Base image full: $BASE_IMAGE_FULL"
           BASE_IMAGE_TAG=$(echo "$BASE_IMAGE_FULL" | cut -d':' -f2)
           echo "Base image tag: $BASE_IMAGE_TAG"
@@ -56,7 +56,7 @@ jobs:
           PRODUCT=$(echo "$BASE_TAG" | cut -d'-' -f2)
           OS=$(echo "$BASE_TAG"      | cut -d'-' -f3)
           PY=$(echo "$BASE_TAG"      | cut -d'-' -f4)
-          TORCH_NPU=$(grep -oiP 'torch-npu==\K[0-9a-z.]+' ./docker/ascend/Dockerfile.ascend_9.0.0_a3 | head -1)
+          TORCH_NPU=$(grep -oiP 'torch-npu==\K[0-9a-z.]+' ./docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_a3 | head -1)
           VERSION=$(git describe --tags --abbrev=0)   # latest release tag, e.g. v0.1.11
           TAG="${VERSION}-cann${CANN}-torch_npu${TORCH_NPU}-${PRODUCT}-${OS}-${PY}-veomni"
           echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
@@ -81,7 +81,7 @@ jobs:
         with:
           context: .
           platforms: linux/arm64
-          file: ./docker/ascend/Dockerfile.ascend_9.0.0_a3
+          file: ./docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_a3
           push: true
           tags: |
             quay.io/ascend/veomni:${{ steps.version.outputs.tag }}
