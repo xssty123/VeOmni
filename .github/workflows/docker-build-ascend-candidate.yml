@@ -1,0 +1,298 @@
+name: docker-build-ascend-candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Ascend image variant to build and validate
+        required: true
+        default: a2-amd64
+        type: choice
+        options:
+          - a2-amd64
+          - a2-arm64
+          - a3-arm64
+
+permissions:
+  contents: read
+
+env:
+  CANDIDATE_PACKAGE: veomni-ascend-candidate
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  prepare-target:
+    name: Prepare ${{ inputs.target }}
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.target.outputs.target }}
+      runner: ${{ steps.target.outputs.runner }}
+      platform: ${{ steps.target.outputs.platform }}
+      dockerfile: ${{ steps.target.outputs.dockerfile }}
+      python_bin: ${{ steps.target.outputs.python_bin }}
+    steps:
+      - name: Resolve target configuration
+        id: target
+        env:
+          TARGET: ${{ inputs.target }}
+        run: |
+          case "$TARGET" in
+            a2-amd64)
+              runner="ubuntu-latest"
+              platform="linux/amd64"
+              dockerfile="docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_910b.x86"
+              python_bin="/app/.venv/bin/python"
+              ;;
+            a2-arm64)
+              runner="ubuntu-22.04-arm"
+              platform="linux/arm64"
+              dockerfile="docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_910b.arm"
+              python_bin="python"
+              ;;
+            a3-arm64)
+              runner="ubuntu-22.04-arm"
+              platform="linux/arm64"
+              dockerfile="docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_a3"
+              python_bin="python"
+              ;;
+            *)
+              echo "Unsupported target: $TARGET" >&2
+              exit 1
+              ;;
+          esac
+
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "runner=$runner" >> "$GITHUB_OUTPUT"
+          echo "platform=$platform" >> "$GITHUB_OUTPUT"
+          echo "dockerfile=$dockerfile" >> "$GITHUB_OUTPUT"
+          echo "python_bin=$python_bin" >> "$GITHUB_OUTPUT"
+
+  build-candidate:
+    name: Build ${{ needs.prepare-target.outputs.target }}
+    needs: prepare-target
+    runs-on: ${{ needs.prepare-target.outputs.runner }}
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.metadata.outputs.image }}
+      tag: ${{ steps.metadata.outputs.tag }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: true
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Compute candidate image metadata
+        id: metadata
+        env:
+          TARGET: ${{ needs.prepare-target.outputs.target }}
+        run: |
+          owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          image="ghcr.io/$owner/$CANDIDATE_PACKAGE"
+          tag="candidate-${TARGET}-${GITHUB_SHA::12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Build and push candidate image
+        id: build
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6.19.2
+        with:
+          context: .
+          file: ${{ needs.prepare-target.outputs.dockerfile }}
+          platforms: ${{ needs.prepare-target.outputs.platform }}
+          push: true
+          tags: ${{ steps.metadata.outputs.image }}:${{ steps.metadata.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=ascend-candidate-${{ needs.prepare-target.outputs.target }}
+          cache-to: type=gha,mode=max,scope=ascend-candidate-${{ needs.prepare-target.outputs.target }}
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            PIP_INDEX=https://pypi.org/simple
+
+      - name: Verify pushed digest
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          if [[ ! "$DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "Invalid image digest: $DIGEST" >&2
+            exit 1
+          fi
+          docker buildx imagetools inspect "$IMAGE@$DIGEST"
+
+      - name: Summarize candidate image
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}
+          TAG: ${{ steps.metadata.outputs.tag }}
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          {
+            echo "## Ascend candidate image"
+            echo
+            echo "- Target: \`${{ needs.prepare-target.outputs.target }}\`"
+            echo "- Dockerfile: \`${{ needs.prepare-target.outputs.dockerfile }}\`"
+            echo "- Candidate tag: \`$IMAGE:$TAG\`"
+            echo "- Immutable reference: \`$IMAGE@$DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  validate-candidate:
+    name: Validate ${{ needs.prepare-target.outputs.target }}
+    needs:
+      - prepare-target
+      - build-candidate
+    runs-on: ${{ needs.prepare-target.outputs.runner }}
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # v1.3.1
+        with:
+          tool-cache: true
+
+      - name: Checkout code
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Pull candidate image by digest
+        env:
+          IMAGE: ${{ needs.build-candidate.outputs.image }}
+          DIGEST: ${{ needs.build-candidate.outputs.digest }}
+          PLATFORM: ${{ needs.prepare-target.outputs.platform }}
+        run: docker pull --platform "$PLATFORM" "$IMAGE@$DIGEST"
+
+      - name: Verify image architecture
+        env:
+          IMAGE: ${{ needs.build-candidate.outputs.image }}
+          DIGEST: ${{ needs.build-candidate.outputs.digest }}
+          PLATFORM: ${{ needs.prepare-target.outputs.platform }}
+        run: |
+          expected_arch="${PLATFORM#linux/}"
+          actual_arch=$(docker image inspect "$IMAGE@$DIGEST" --format '{{.Architecture}}')
+          if [[ "$actual_arch" != "$expected_arch" ]]; then
+            echo "Expected architecture $expected_arch, got $actual_arch" >&2
+            exit 1
+          fi
+
+      - name: Run image environment smoke test
+        env:
+          IMAGE: ${{ needs.build-candidate.outputs.image }}
+          DIGEST: ${{ needs.build-candidate.outputs.digest }}
+          PLATFORM: ${{ needs.prepare-target.outputs.platform }}
+          PYTHON_BIN: ${{ needs.prepare-target.outputs.python_bin }}
+        run: |
+          docker run --rm \
+            --platform "$PLATFORM" \
+            --volume "$GITHUB_WORKSPACE/docker/ascend/tests:/opt/veomni-image-tests:ro" \
+            "$IMAGE@$DIGEST" \
+            "$PYTHON_BIN" /opt/veomni-image-tests/image_smoke.py
+
+      - name: Summarize validation
+        env:
+          IMAGE: ${{ needs.build-candidate.outputs.image }}
+          DIGEST: ${{ needs.build-candidate.outputs.digest }}
+        run: |
+          {
+            echo "## Ascend candidate validation"
+            echo
+            echo "- Result: passed"
+            echo "- Target: \`${{ needs.prepare-target.outputs.target }}\`"
+            echo "- Tested reference: \`$IMAGE@$DIGEST\`"
+            echo "- Scope: image architecture, Python environment, torch-npu, triton-ascend, and fla_npu registration"
+            echo "- NPU execution: not tested"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  record-result:
+    name: Record result
+    if: ${{ always() }}
+    needs:
+      - prepare-target
+      - build-candidate
+      - validate-candidate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Write validation record
+        env:
+          TARGET: ${{ needs.prepare-target.outputs.target }}
+          PLATFORM: ${{ needs.prepare-target.outputs.platform }}
+          DOCKERFILE: ${{ needs.prepare-target.outputs.dockerfile }}
+          IMAGE: ${{ needs.build-candidate.outputs.image }}
+          TAG: ${{ needs.build-candidate.outputs.tag }}
+          DIGEST: ${{ needs.build-candidate.outputs.digest }}
+          BUILD_RESULT: ${{ needs.build-candidate.result }}
+          VALIDATION_RESULT: ${{ needs.validate-candidate.result }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          jq -n \
+            --arg commit "$GITHUB_SHA" \
+            --arg run_url "$RUN_URL" \
+            --arg target "$TARGET" \
+            --arg platform "$PLATFORM" \
+            --arg dockerfile "$DOCKERFILE" \
+            --arg image "$IMAGE" \
+            --arg tag "$TAG" \
+            --arg digest "$DIGEST" \
+            --arg build_result "$BUILD_RESULT" \
+            --arg validation_result "$VALIDATION_RESULT" \
+            '{
+              commit: $commit,
+              run_url: $run_url,
+              target: $target,
+              platform: $platform,
+              dockerfile: $dockerfile,
+              image: $image,
+              tag: $tag,
+              digest: $digest,
+              build_result: $build_result,
+              validation_result: $validation_result
+            }' > ascend-candidate-result.json
+
+      - name: Upload validation record
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ascend-candidate-${{ inputs.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ascend-candidate-result.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Summarize final result
+        env:
+          BUILD_RESULT: ${{ needs.build-candidate.result }}
+          VALIDATION_RESULT: ${{ needs.validate-candidate.result }}
+          IMAGE: ${{ needs.build-candidate.outputs.image }}
+          TAG: ${{ needs.build-candidate.outputs.tag }}
+          DIGEST: ${{ needs.build-candidate.outputs.digest }}
+        run: |
+          {
+            echo "## Final result"
+            echo
+            echo "- Build: \`$BUILD_RESULT\`"
+            echo "- Validation: \`$VALIDATION_RESULT\`"
+            echo "- Candidate tag: \`$IMAGE:$TAG\`"
+            echo "- Immutable reference: \`$IMAGE@$DIGEST\`"
+          } >> "$GITHUB_STEP_SUMMARY"
