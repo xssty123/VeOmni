@@ -19,7 +19,7 @@ from typing import Any, Dict, List, Optional
 import torch
 
 from ..arguments import DataArguments, ModelArguments, TrainingArguments, VeOmniArguments
-from ..data import MainCollator, build_data_transform, build_multimodal_chat_template
+from ..data import MainCollator, build_chat_template, build_data_transform
 from ..distributed.clip_grad_norm import veomni_clip_grad_norm
 from ..distributed.parallel_state import get_parallel_state, use_parallel_state
 from ..distributed.torch_compile import (
@@ -34,7 +34,7 @@ from ..utils import helper
 from ..utils.device import get_device_type, synchronize
 from ..utils.loss_utils import count_loss_token, reduce_global_loss_token
 from ..utils.model_utils import pretty_print_trainable_parameters
-from .base import BaseTrainer, VeOmniIter, _collect_muon_kwargs
+from .base import BaseTrainer, VeOmniIter, mean_aux_metrics
 
 
 logger = helper.create_logger(__name__)
@@ -42,6 +42,12 @@ MAX_PIXELS = 768 * 28 * 28
 
 
 def _get_vlm_visual_module(model):
+    get_base_model = getattr(model, "get_base_model", None)
+    if callable(get_base_model):
+        base_model = get_base_model()
+        if base_model is not model:
+            return _get_vlm_visual_module(base_model)
+
     # Qwen-VL wrappers are not consistent across transformers versions:
     # older releases may expose `visual` directly on the conditional model
     # for backward compatibility, while newer ones only keep `model.visual`.
@@ -60,11 +66,11 @@ def _get_vlm_visual_module(model):
 class VLMTrainingArguments(TrainingArguments):
     freeze_vit: bool = field(
         default=False,
-        metadata={"help": "Whether or not to freeze the vit parameters."},
+        metadata={"help": "Whether to freeze ViT parameters during full tuning; ignored when LoRA is enabled."},
     )
     freeze_audio_tower: bool = field(
         default=False,
-        metadata={"help": "Whether or not to freeze the audio tower parameters."},
+        metadata={"help": "Whether to freeze audio tower parameters during full tuning; ignored with LoRA."},
     )
     vit_lr: float = field(
         default=1e-6,
@@ -188,29 +194,44 @@ class VLMTrainer:
     def _freeze_model_module(self):
         args: VeOmniVLMArguments = self.base.args
         model_config = self.base.model_config
+        lora_enabled = bool(args.model.lora_config)
         if model_config.model_type in ("qwen2_5_omni", "qwen3_omni_moe"):
             self.base.model.disable_talker()
 
-        if args.train.freeze_vit:
-            if model_config.model_type in ("qwen2_5_omni", "qwen3_omni_moe"):
-                self.base.model.thinker.visual.requires_grad_(False)
-                self.base.model.thinker.visual.merger.requires_grad_(True)
-            else:
-                # Resolve both flat and nested visual-module layouts to cover
-                # both the plain `model.visual` shape and Qwen3.5-VL's nested
-                # layout.
-                visual = _get_vlm_visual_module(self.base.model)
-                if visual is None:
-                    raise AttributeError(f"Cannot find visual module for model_type={model_config.model_type}.")
-                visual.requires_grad_(False)
+        # VLMTrainer composes BaseTrainer instead of calling its constructor, so
+        # it must opt into the shared LoRA setup explicitly. The wrapper freezes
+        # all base weights and re-enables only matched adapter parameters.
+        if lora_enabled:
+            self.base._setup_lora()
 
-        if args.train.freeze_audio_tower and model_config.model_type in ("qwen2_5_omni", "qwen3_omni_moe"):
-            self.base.model.thinker.audio_tower.requires_grad_(False)
-            # Qwen2.5-Omni uses audio_tower.proj; Qwen3-Omni-MoE uses audio_tower.proj1.
-            audio_proj = (
-                getattr(self.base.model.thinker.audio_tower, "proj1", None) or self.base.model.thinker.audio_tower.proj
-            )
-            audio_proj.requires_grad_(True)
+        is_omni = model_config.model_type in ("qwen2_5_omni", "qwen3_omni_moe")
+        visual = self.base.model.thinker.visual if is_omni else _get_vlm_visual_module(self.base.model)
+
+        # LoRA setup is authoritative for trainability. It already freezes every
+        # untargeted parameter, so the legacy tower flags apply only to full tuning.
+        if not lora_enabled:
+            if args.train.freeze_vit:
+                if is_omni:
+                    self.base.model.thinker.visual.requires_grad_(False)
+                    # Preserve the existing full-tuning policy: freeze the
+                    # visual backbone while continuing to train the merger.
+                    self.base.model.thinker.visual.merger.requires_grad_(True)
+                else:
+                    # Resolve both flat and nested visual-module layouts to cover
+                    # both the plain `model.visual` shape and Qwen3.5-VL's nested
+                    # layout.
+                    if visual is None:
+                        raise AttributeError(f"Cannot find visual module for model_type={model_config.model_type}.")
+                    visual.requires_grad_(False)
+
+            if args.train.freeze_audio_tower and is_omni:
+                self.base.model.thinker.audio_tower.requires_grad_(False)
+                # Qwen2.5-Omni uses audio_tower.proj; Qwen3-Omni-MoE uses audio_tower.proj1.
+                audio_proj = (
+                    getattr(self.base.model.thinker.audio_tower, "proj1", None)
+                    or self.base.model.thinker.audio_tower.proj
+                )
+                audio_proj.requires_grad_(True)
 
         pretty_print_trainable_parameters(self.base.model)
         helper.print_device_mem_info("VRAM usage after building model")
@@ -219,9 +240,7 @@ class VLMTrainer:
         args: VeOmniVLMArguments = self.base.args
         self.base.processor = build_processor(args.model.tokenizer_path, max_pixels=MAX_PIXELS)
         if self.base.model_config.model_type not in ("qwen2_5_omni", "qwen3_omni_moe"):
-            self.base.chat_template = build_multimodal_chat_template(
-                args.data.chat_template, self.base.processor.tokenizer
-            )
+            self.base.chat_template = build_chat_template(args.data.chat_template, self.base.processor)
             self.base.model_assets = [self.base.processor, self.base.chat_template]
         else:
             self.base.chat_template = None
@@ -274,8 +293,8 @@ class VLMTrainer:
                 else:
                     other_params.append(param)
 
-        # Only create groups that have trainable params. An empty vit group
-        # (freeze_vit=true) has no optimizer state under DCP and would raise
+        # Only create groups that have trainable params. An empty visual group
+        # has no optimizer state under DCP and would raise
         # KeyError: 'betas' on the first step after resume. VLMRLTrainer
         # inherits this method, so the guard covers both trainers.
         param_groups = []
@@ -293,7 +312,7 @@ class VLMTrainer:
             param_groups=param_groups,
             no_decay_modules=args.train.optimizer.no_decay_modules,
             no_decay_params=args.train.optimizer.no_decay_params,
-            muon_kwargs=_collect_muon_kwargs(args.train.optimizer),
+            optimizer_config=args.train.optimizer,
         )
 
     def on_train_begin(self):
@@ -311,8 +330,8 @@ class VLMTrainer:
     def on_step_begin(self, micro_batches=None):
         self.base.on_step_begin(micro_batches=micro_batches)
 
-    def on_step_end(self, loss=None, loss_dict=None, grad_norm=None):
-        self.base.on_step_end(loss=loss, loss_dict=loss_dict, grad_norm=grad_norm)
+    def on_step_end(self, loss=None, loss_dict=None, grad_norm=None, aux_metrics=None):
+        self.base.on_step_end(loss=loss, loss_dict=loss_dict, grad_norm=grad_norm, aux_metrics=aux_metrics)
 
     def train_step(
         self,
@@ -330,6 +349,7 @@ class VLMTrainer:
 
         total_loss = 0.0
         total_loss_dict = defaultdict(int)
+        total_aux_metrics = defaultdict(float)
 
         # token num for fixed_ce_loss in postforward
         self.base.micro_batches_token_len = count_loss_token(micro_batches)
@@ -339,15 +359,19 @@ class VLMTrainer:
         for micro_step, micro_batch in enumerate(micro_batches):
             mark_compile_step_begin(getattr(self.base.model, "_veomni_compile_uses_cuda_graphs", False))
             self.base.model_reshard(micro_step, num_micro_steps)
+            self.base._configure_hsdp_allreduce(micro_step, num_micro_steps)
             loss: torch.Tensor
             loss_dict: Dict[str, torch.Tensor]
+            aux_metrics: Dict[str, torch.Tensor]
             # token num for fixed_ce_loss in postforward
             self.base.micro_batch_token_len = count_loss_token(micro_batch)
-            loss, loss_dict = self.base.forward_backward_step(micro_batch)
+            loss, loss_dict, aux_metrics = self.base.forward_backward_step(micro_batch)
 
             total_loss += loss.item()
             for k, v in loss_dict.items():
                 total_loss_dict[k] += v.item()
+            for k, v in aux_metrics.items():
+                total_aux_metrics[k] += v.item()
 
         # Gradient clipping (reads FSDP/EP groups from current ParallelState)
         with use_parallel_state("base"):
@@ -358,7 +382,12 @@ class VLMTrainer:
         self.base.lr_scheduler.step()
         self.base.optimizer.zero_grad()
 
-        self.on_step_end(loss=total_loss, loss_dict=total_loss_dict, grad_norm=grad_norm)
+        self.on_step_end(
+            loss=total_loss,
+            loss_dict=total_loss_dict,
+            grad_norm=grad_norm,
+            aux_metrics=mean_aux_metrics(total_aux_metrics, num_micro_steps),
+        )
 
     def train(self):
         args: VeOmniVLMArguments = self.base.args
