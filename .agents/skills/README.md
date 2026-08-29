@@ -41,4 +41,3 @@ See the [Agent Skills specification](https://agentskills.io/specification) for t
 | `veomni-uv-update` | Dependency management with uv (version bumps, torch, lockfile) |
 | `create-pr` | Create a pull request — handles uncommitted changes, generates CI-compliant title and description |
 | `veomni-profile` | Performance profiling — analyze traces/snapshots or generate profiles and optimize |
-| `veomni-ascend-docker` | Build and qualify Ascend Docker candidates through fork Actions, GHCR staging, and exact-digest smoke validation |
