@@ -1,0 +1,512 @@
+name: docker-promote-ascend-candidate
+
+on:
+  workflow_dispatch:
+    inputs:
+      target:
+        description: Ascend image series to promote
+        required: true
+        type: choice
+        options: [a2, a3]
+      expected_commit:
+        description: Full source commit shared by every candidate
+        required: true
+        type: string
+      amd64_run_id:
+        description: Successful a2-amd64 candidate run ID (A2 only)
+        required: false
+        type: string
+      arm64_run_id:
+        description: Successful a2-arm64 or a3-arm64 candidate run ID
+        required: true
+        type: string
+      quay_tag:
+        description: Exact new tag under quay.io/ascend/veomni
+        required: true
+        type: string
+      tag_policy:
+        description: Intended lifecycle of the new tag
+        required: true
+        type: choice
+        options: [version-tag, mutable-pointer]
+      protection_confirmation:
+        description: Type PROTECTED after verifying environment and Quay protections
+        required: true
+        type: string
+      confirmation:
+        description: Type PUBLISH to confirm creation of this new Quay tag
+        required: true
+        type: string
+
+permissions:
+  actions: read
+  contents: read
+  packages: read
+
+concurrency:
+  group: ascend-quay-promotion-${{ inputs.quay_tag }}
+  cancel-in-progress: false
+
+env:
+  CANDIDATE_PACKAGE: veomni-ascend-candidate
+  CANDIDATE_WORKFLOW: .github/workflows/docker-build-ascend-candidate.yml
+  QUAY_REPOSITORY: quay.io/ascend/veomni
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  prepare:
+    name: Verify candidate records
+    runs-on: ubuntu-latest
+    outputs:
+      target: ${{ steps.records.outputs.target }}
+      expected_commit: ${{ steps.records.outputs.expected_commit }}
+      destination: ${{ steps.records.outputs.destination }}
+      tag_policy: ${{ steps.records.outputs.tag_policy }}
+      amd64_ref: ${{ steps.records.outputs.amd64_ref }}
+      amd64_digest: ${{ steps.records.outputs.amd64_digest }}
+      amd64_artifact_id: ${{ steps.records.outputs.amd64_artifact_id }}
+      amd64_artifact_name: ${{ steps.records.outputs.amd64_artifact_name }}
+      amd64_run_attempt: ${{ steps.records.outputs.amd64_run_attempt }}
+      arm64_ref: ${{ steps.records.outputs.arm64_ref }}
+      arm64_digest: ${{ steps.records.outputs.arm64_digest }}
+      arm64_artifact_id: ${{ steps.records.outputs.arm64_artifact_id }}
+      arm64_artifact_name: ${{ steps.records.outputs.arm64_artifact_name }}
+      arm64_run_attempt: ${{ steps.records.outputs.arm64_run_attempt }}
+    steps:
+      - name: Validate inputs and candidate records
+        id: records
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TARGET: ${{ inputs.target }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          AMD64_RUN_ID: ${{ inputs.amd64_run_id }}
+          ARM64_RUN_ID: ${{ inputs.arm64_run_id }}
+          QUAY_TAG: ${{ inputs.quay_tag }}
+          TAG_POLICY: ${{ inputs.tag_policy }}
+          PROTECTION_CONFIRMATION: ${{ inputs.protection_confirmation }}
+          CONFIRMATION: ${{ inputs.confirmation }}
+        run: |
+          set -euo pipefail
+
+          [[ "$CONFIRMATION" == "PUBLISH" ]] || { echo "confirmation must be PUBLISH" >&2; exit 1; }
+          [[ "$PROTECTION_CONFIRMATION" == "PROTECTED" ]] || { echo "protection_confirmation must be PROTECTED" >&2; exit 1; }
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]] || { echo "expected_commit must be a full lowercase SHA" >&2; exit 1; }
+          [[ "$QUAY_TAG" =~ ^[A-Za-z0-9_][A-Za-z0-9_.-]{0,127}$ ]] || { echo "invalid Quay tag: $QUAY_TAG" >&2; exit 1; }
+          [[ "$ARM64_RUN_ID" =~ ^[0-9]+$ ]] || { echo "arm64_run_id must be numeric" >&2; exit 1; }
+          if [[ "$TARGET" == "a2" ]]; then
+            [[ "$AMD64_RUN_ID" =~ ^[0-9]+$ ]] || { echo "amd64_run_id is required for A2" >&2; exit 1; }
+          elif [[ "$TARGET" == "a3" ]]; then
+            [[ -z "$AMD64_RUN_ID" ]] || { echo "amd64_run_id must be empty for A3" >&2; exit 1; }
+          else
+            echo "unsupported target: $TARGET" >&2
+            exit 1
+          fi
+
+          default_branch=$(gh api "repos/$GITHUB_REPOSITORY" --jq '.default_branch')
+          [[ "$GITHUB_REF" == "refs/heads/$default_branch" ]] || {
+            echo "promotion must run from the fork default branch: $default_branch" >&2
+            exit 1
+          }
+
+          owner=$(echo "$GITHUB_REPOSITORY_OWNER" | tr '[:upper:]' '[:lower:]')
+          candidate_image="ghcr.io/$owner/$CANDIDATE_PACKAGE"
+          destination="$QUAY_REPOSITORY:$QUAY_TAG"
+
+          load_record() {
+            local label="$1" run_id="$2" expected_target="$3" expected_platform="$4" expected_dockerfile="$5"
+            local record_dir="$RUNNER_TEMP/$label" run_json run_attempt expected_run_url
+            local artifact_name artifacts_json artifact_count artifact_id record digest expected_tag
+
+            run_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id")
+            expected_run_url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$run_id"
+            jq -e \
+              --argjson run_id "$run_id" --arg repository "$GITHUB_REPOSITORY" \
+              --arg workflow "$CANDIDATE_WORKFLOW" --arg commit "$EXPECTED_COMMIT" \
+              --arg run_url "$expected_run_url" \
+              '(.id == $run_id) and (.run_attempt >= 1) and
+               (.event == "workflow_dispatch") and (.status == "completed") and
+               (.conclusion == "success") and (.path == $workflow) and
+               (.head_sha == $commit) and (.repository.full_name == $repository) and
+               (.head_repository.full_name == $repository) and (.html_url == $run_url)' \
+              <<< "$run_json" > /dev/null
+
+            run_attempt=$(jq -r '.run_attempt' <<< "$run_json")
+            artifact_name="ascend-candidate-${expected_target}-${run_id}-${run_attempt}"
+            artifacts_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$run_id/artifacts?per_page=100")
+            artifact_count=$(jq --arg name "$artifact_name" \
+              '[.artifacts[] | select(.expired == false and .name == $name)] | length' <<< "$artifacts_json")
+            [[ "$artifact_count" == "1" ]] || {
+              echo "expected one live artifact named $artifact_name; found $artifact_count" >&2
+              exit 1
+            }
+            artifact_id=$(jq -r --arg name "$artifact_name" \
+              '.artifacts[] | select(.expired == false and .name == $name) | .id' <<< "$artifacts_json")
+
+            mkdir -p "$record_dir"
+            gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$artifact_id/zip" > "$record_dir/artifact.zip"
+            unzip -q "$record_dir/artifact.zip" -d "$record_dir/content"
+            record="$record_dir/content/ascend-candidate-result.json"
+            [[ -f "$record" ]] || { echo "artifact $artifact_id has no validation record" >&2; exit 1; }
+
+            expected_tag="candidate-${expected_target}-${EXPECTED_COMMIT:0:12}-${run_id}-${run_attempt}"
+            jq -e \
+              --arg commit "$EXPECTED_COMMIT" --arg run_url "$expected_run_url" \
+              --arg target "$expected_target" --arg platform "$expected_platform" \
+              --arg dockerfile "$expected_dockerfile" --arg image "$candidate_image" \
+              --arg tag "$expected_tag" \
+              '(.build_result == "success") and (.validation_result == "success") and
+               (.commit == $commit) and (.run_url == $run_url) and
+               (.target == $target) and (.platform == $platform) and
+               (.dockerfile == $dockerfile) and (.image == $image) and (.tag == $tag) and
+               (.digest | test("^sha256:[0-9a-f]{64}$"))' "$record" > /dev/null
+
+            digest=$(jq -r '.digest' "$record")
+            echo "${label}_ref=$candidate_image@$digest" >> "$GITHUB_OUTPUT"
+            echo "${label}_digest=$digest" >> "$GITHUB_OUTPUT"
+            echo "${label}_artifact_id=$artifact_id" >> "$GITHUB_OUTPUT"
+            echo "${label}_artifact_name=$artifact_name" >> "$GITHUB_OUTPUT"
+            echo "${label}_run_attempt=$run_attempt" >> "$GITHUB_OUTPUT"
+          }
+
+          if [[ "$TARGET" == "a2" ]]; then
+            load_record amd64 "$AMD64_RUN_ID" a2-amd64 linux/amd64 \
+              docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_910b.x86
+            load_record arm64 "$ARM64_RUN_ID" a2-arm64 linux/arm64 \
+              docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_910b.arm
+          else
+            for output in amd64_ref amd64_digest amd64_artifact_id amd64_artifact_name amd64_run_attempt; do
+              echo "$output=" >> "$GITHUB_OUTPUT"
+            done
+            load_record arm64 "$ARM64_RUN_ID" a3-arm64 linux/arm64 \
+              docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_a3
+          fi
+
+          echo "target=$TARGET" >> "$GITHUB_OUTPUT"
+          echo "expected_commit=$EXPECTED_COMMIT" >> "$GITHUB_OUTPUT"
+          echo "destination=$destination" >> "$GITHUB_OUTPUT"
+          echo "tag_policy=$TAG_POLICY" >> "$GITHUB_OUTPUT"
+
+  promote:
+    name: Promote validated digest to Quay
+    needs: prepare
+    runs-on: ubuntu-latest
+    environment: quay-production
+    outputs:
+      amd64_child_digest: ${{ steps.sources.outputs.amd64_child_digest }}
+      arm64_child_digest: ${{ steps.sources.outputs.arm64_child_digest }}
+      publication_attempted: ${{ steps.publish.outputs.publication_attempted }}
+      create_status: ${{ steps.publish.outputs.create_status }}
+      destination_state: ${{ steps.result.outputs.destination_state }}
+      verification_result: ${{ steps.result.outputs.verification_result }}
+      destination_digest: ${{ steps.result.outputs.destination_digest }}
+      platforms: ${{ steps.result.outputs.platforms }}
+      destination_child_digests: ${{ steps.result.outputs.destination_child_digests }}
+    steps:
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3.12.0
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Log in to Quay
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: quay.io
+          username: ${{ secrets.QUAY_USERNAME }}
+          password: ${{ secrets.QUAY_PASSWORD }}
+
+      - name: Verify source manifests and destination absence
+        id: sources
+        env:
+          TARGET: ${{ needs.prepare.outputs.target }}
+          DESTINATION: ${{ needs.prepare.outputs.destination }}
+          AMD64_REF: ${{ needs.prepare.outputs.amd64_ref }}
+          ARM64_REF: ${{ needs.prepare.outputs.arm64_ref }}
+        run: |
+          set -euo pipefail
+
+          inspect_single_runtime_manifest() {
+            local label="$1" ref="$2" expected_platform="$3"
+            local raw descriptor_count platform child_digest
+            raw=$(docker buildx imagetools inspect "$ref" --raw)
+            if jq -e '.manifests' <<< "$raw" > /dev/null; then
+              descriptor_count=$(jq \
+                '[.manifests[] | select(.platform.os != "unknown" and .platform.architecture != "unknown")] | length' <<< "$raw")
+              [[ "$descriptor_count" == "1" ]] || {
+                echo "expected one runtime descriptor for $ref; found $descriptor_count" >&2
+                exit 1
+              }
+              platform=$(jq -r \
+                '.manifests[] | select(.platform.os != "unknown" and .platform.architecture != "unknown") | .platform.os + "/" + .platform.architecture' <<< "$raw")
+              child_digest=$(jq -r \
+                '.manifests[] | select(.platform.os != "unknown" and .platform.architecture != "unknown") | .digest' <<< "$raw")
+            else
+              platform=$(docker buildx imagetools inspect "$ref" --format '{{json .Image}}' | jq -r '.os + "/" + .architecture')
+              child_digest="${ref##*@}"
+            fi
+            [[ "$platform" == "$expected_platform" ]] || { echo "expected $expected_platform for $ref, got $platform" >&2; exit 1; }
+            [[ "$child_digest" =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "invalid runtime digest: $child_digest" >&2; exit 1; }
+            echo "${label}_child_digest=$child_digest" >> "$GITHUB_OUTPUT"
+          }
+
+          inspect_single_runtime_manifest arm64 "$ARM64_REF" linux/arm64
+          if [[ "$TARGET" == "a2" ]]; then
+            inspect_single_runtime_manifest amd64 "$AMD64_REF" linux/amd64
+          else
+            echo "amd64_child_digest=" >> "$GITHUB_OUTPUT"
+          fi
+
+          set +e
+          existing_output=$(docker buildx imagetools inspect "$DESTINATION" 2>&1)
+          existing_status=$?
+          set -e
+          [[ $existing_status -ne 0 ]] || { echo "destination already exists: $DESTINATION" >&2; exit 1; }
+          grep -qiE 'not found|manifest unknown|404' <<< "$existing_output" || {
+            echo "could not establish that destination is absent" >&2
+            echo "$existing_output" >&2
+            exit 1
+          }
+
+      - name: Promote without rebuilding
+        id: publish
+        env:
+          TARGET: ${{ needs.prepare.outputs.target }}
+          DESTINATION: ${{ needs.prepare.outputs.destination }}
+          AMD64_REF: ${{ needs.prepare.outputs.amd64_ref }}
+          ARM64_REF: ${{ needs.prepare.outputs.arm64_ref }}
+        run: |
+          set -uo pipefail
+          echo "publication_attempted=true" >> "$GITHUB_OUTPUT"
+          set +e
+          if [[ "$TARGET" == "a2" ]]; then
+            docker buildx imagetools create --tag "$DESTINATION" "$AMD64_REF" "$ARM64_REF"
+          else
+            docker buildx imagetools create --tag "$DESTINATION" "$ARM64_REF"
+          fi
+          create_status=$?
+          set -e
+          echo "create_status=$create_status" >> "$GITHUB_OUTPUT"
+          exit "$create_status"
+
+      - name: Inspect destination after publication attempt
+        id: result
+        if: ${{ always() && steps.publish.outputs.publication_attempted == 'true' }}
+        env:
+          TARGET: ${{ needs.prepare.outputs.target }}
+          DESTINATION: ${{ needs.prepare.outputs.destination }}
+          AMD64_CHILD_DIGEST: ${{ steps.sources.outputs.amd64_child_digest }}
+          ARM64_CHILD_DIGEST: ${{ steps.sources.outputs.arm64_child_digest }}
+        run: |
+          set -euo pipefail
+          inspection="" raw="" raw_output=""
+
+          is_not_found() {
+            grep -qiE 'not found|manifest unknown|404' <<< "$1"
+          }
+
+          for attempt in 1 2 3 4 5; do
+            set +e
+            inspection=$(docker buildx imagetools inspect "$DESTINATION" 2>&1); inspect_status=$?
+            raw_output=$(docker buildx imagetools inspect "$DESTINATION" --raw 2>&1); raw_status=$?
+            set -e
+            if [[ $inspect_status -eq 0 && $raw_status -eq 0 ]]; then
+              raw="$raw_output"
+              break
+            fi
+            if [[ $attempt -eq 5 ]]; then
+              if [[ $inspect_status -eq 0 || $raw_status -eq 0 ]]; then
+                echo "destination_state=present" >> "$GITHUB_OUTPUT"
+                echo "verification_result=incomplete-inspection" >> "$GITHUB_OUTPUT"
+                if [[ $inspect_status -eq 0 ]]; then
+                  partial_digest=$(awk '/^Digest:/ {print $2; exit}' <<< "$inspection")
+                  if [[ "$partial_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+                    echo "destination_digest=$partial_digest" >> "$GITHUB_OUTPUT"
+                  fi
+                fi
+                if [[ $raw_status -eq 0 ]] && jq -e '.manifests' <<< "$raw_output" > /dev/null; then
+                  partial_descriptors=$(jq -r '
+                    [.manifests[] | select(.platform.os != "unknown" and .platform.architecture != "unknown")
+                     | {platform: (.platform.os + "/" + .platform.architecture), digest: .digest}]
+                    | sort_by(.platform) | .[] | [.platform, .digest] | @tsv' <<< "$raw_output")
+                  if [[ -n "$partial_descriptors" ]]; then
+                    echo "platforms=$(cut -f1 <<< "$partial_descriptors" | paste -sd, -)" >> "$GITHUB_OUTPUT"
+                    echo "destination_child_digests=$(cut -f2 <<< "$partial_descriptors" | paste -sd, -)" >> "$GITHUB_OUTPUT"
+                  fi
+                fi
+              elif is_not_found "$inspection" && is_not_found "$raw_output"; then
+                echo "destination_state=absent" >> "$GITHUB_OUTPUT"
+                echo "verification_result=not-found" >> "$GITHUB_OUTPUT"
+              else
+                echo "destination_state=unknown" >> "$GITHUB_OUTPUT"
+                echo "verification_result=inspect-failed" >> "$GITHUB_OUTPUT"
+              fi
+              echo "destination not inspectable after 5 attempts" >&2
+              echo "$inspection" >&2
+              echo "$raw_output" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+
+          echo "destination_state=present" >> "$GITHUB_OUTPUT"
+          echo "$inspection"
+          destination_digest=$(awk '/^Digest:/ {print $2; exit}' <<< "$inspection")
+          if [[ ! "$destination_digest" =~ ^sha256:[0-9a-f]{64}$ ]]; then
+            echo "verification_result=invalid-digest" >> "$GITHUB_OUTPUT"
+            echo "invalid destination digest" >&2
+            exit 1
+          fi
+
+          if jq -e '.manifests' <<< "$raw" > /dev/null; then
+            runtime_descriptors=$(jq -r '
+              [.manifests[] | select(.platform.os != "unknown" and .platform.architecture != "unknown")
+               | {platform: (.platform.os + "/" + .platform.architecture), digest: .digest}]
+              | sort_by(.platform) | .[] | [.platform, .digest] | @tsv' <<< "$raw")
+          else
+            platform=$(docker buildx imagetools inspect "$DESTINATION" --format '{{json .Image}}' | jq -r '.os + "/" + .architecture')
+            runtime_descriptors=$(printf '%s\t%s\n' "$platform" "$destination_digest")
+          fi
+
+          if [[ "$TARGET" == "a2" ]]; then
+            expected_descriptors=$(printf '%s\t%s\n%s\t%s\n' linux/amd64 "$AMD64_CHILD_DIGEST" linux/arm64 "$ARM64_CHILD_DIGEST" | sort)
+          else
+            expected_descriptors=$(printf '%s\t%s\n' linux/arm64 "$ARM64_CHILD_DIGEST")
+          fi
+
+          platforms=$(cut -f1 <<< "$runtime_descriptors" | paste -sd, -)
+          child_digests=$(cut -f2 <<< "$runtime_descriptors" | paste -sd, -)
+          echo "destination_digest=$destination_digest" >> "$GITHUB_OUTPUT"
+          echo "platforms=$platforms" >> "$GITHUB_OUTPUT"
+          echo "destination_child_digests=$child_digests" >> "$GITHUB_OUTPUT"
+
+          if [[ "$runtime_descriptors" != "$expected_descriptors" ]]; then
+            echo "verification_result=mismatch" >> "$GITHUB_OUTPUT"
+            echo "destination descriptors do not match validated sources" >&2
+            echo "expected:" >&2; echo "$expected_descriptors" >&2
+            echo "actual:" >&2; echo "$runtime_descriptors" >&2
+            exit 1
+          fi
+          echo "verification_result=matched" >> "$GITHUB_OUTPUT"
+
+  record:
+    name: Record promotion attempt
+    if: ${{ always() }}
+    needs: [prepare, promote]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Write promotion record
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          PROMOTE_RESULT: ${{ needs.promote.result }}
+          TARGET: ${{ inputs.target }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+          DESTINATION: ${{ env.QUAY_REPOSITORY }}:${{ inputs.quay_tag }}
+          TAG_POLICY: ${{ inputs.tag_policy }}
+          PUBLICATION_ATTEMPTED: ${{ needs.promote.outputs.publication_attempted }}
+          CREATE_STATUS: ${{ needs.promote.outputs.create_status }}
+          DESTINATION_STATE: ${{ needs.promote.outputs.destination_state }}
+          VERIFICATION_RESULT: ${{ needs.promote.outputs.verification_result }}
+          DESTINATION_DIGEST: ${{ needs.promote.outputs.destination_digest }}
+          PLATFORMS: ${{ needs.promote.outputs.platforms }}
+          DESTINATION_CHILD_DIGESTS: ${{ needs.promote.outputs.destination_child_digests }}
+          AMD64_RUN_ID: ${{ inputs.amd64_run_id }}
+          AMD64_RUN_ATTEMPT: ${{ needs.prepare.outputs.amd64_run_attempt }}
+          AMD64_ARTIFACT_ID: ${{ needs.prepare.outputs.amd64_artifact_id }}
+          AMD64_ARTIFACT_NAME: ${{ needs.prepare.outputs.amd64_artifact_name }}
+          AMD64_DIGEST: ${{ needs.prepare.outputs.amd64_digest }}
+          AMD64_CHILD_DIGEST: ${{ needs.promote.outputs.amd64_child_digest }}
+          ARM64_RUN_ID: ${{ inputs.arm64_run_id }}
+          ARM64_RUN_ATTEMPT: ${{ needs.prepare.outputs.arm64_run_attempt }}
+          ARM64_ARTIFACT_ID: ${{ needs.prepare.outputs.arm64_artifact_id }}
+          ARM64_ARTIFACT_NAME: ${{ needs.prepare.outputs.arm64_artifact_name }}
+          ARM64_DIGEST: ${{ needs.prepare.outputs.arm64_digest }}
+          ARM64_CHILD_DIGEST: ${{ needs.promote.outputs.arm64_child_digest }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          attempted=false
+          if [[ "$PUBLICATION_ATTEMPTED" == "true" ]]; then
+            attempted=true
+          fi
+          jq -n \
+            --arg prepare_result "$PREPARE_RESULT" --arg promote_result "$PROMOTE_RESULT" \
+            --arg target "$TARGET" --arg expected_commit "$EXPECTED_COMMIT" \
+            --arg destination "$DESTINATION" --arg tag_policy "$TAG_POLICY" \
+            --argjson publication_attempted "$attempted" --arg create_status "$CREATE_STATUS" \
+            --arg destination_state "$DESTINATION_STATE" --arg verification_result "$VERIFICATION_RESULT" \
+            --arg destination_digest "$DESTINATION_DIGEST" --arg platforms "$PLATFORMS" \
+            --arg destination_child_digests "$DESTINATION_CHILD_DIGESTS" \
+            --arg amd64_run_id "$AMD64_RUN_ID" --arg amd64_run_attempt "$AMD64_RUN_ATTEMPT" \
+            --arg amd64_artifact_id "$AMD64_ARTIFACT_ID" --arg amd64_artifact_name "$AMD64_ARTIFACT_NAME" \
+            --arg amd64_digest "$AMD64_DIGEST" --arg amd64_child_digest "$AMD64_CHILD_DIGEST" \
+            --arg arm64_run_id "$ARM64_RUN_ID" --arg arm64_run_attempt "$ARM64_RUN_ATTEMPT" \
+            --arg arm64_artifact_id "$ARM64_ARTIFACT_ID" --arg arm64_artifact_name "$ARM64_ARTIFACT_NAME" \
+            --arg arm64_digest "$ARM64_DIGEST" --arg arm64_child_digest "$ARM64_CHILD_DIGEST" \
+            --arg run_url "$RUN_URL" \
+            '{
+              prepare_result: $prepare_result, promote_result: $promote_result,
+              publication_attempted: $publication_attempted,
+              create_status: (if $create_status == "" then null else ($create_status | tonumber) end),
+              destination_state: (if $destination_state == "" then "not-inspected" else $destination_state end),
+              verification_result: (if $verification_result == "" then "not-run" else $verification_result end),
+              target: $target, expected_commit: $expected_commit, destination: $destination,
+              destination_digest: (if $destination_digest == "" then null else $destination_digest end),
+              platforms: (if $platforms == "" then [] else ($platforms | split(",")) end),
+              destination_child_digests: (if $destination_child_digests == "" then [] else ($destination_child_digests | split(",")) end),
+              tag_policy: $tag_policy,
+              sources: {
+                amd64: (if $amd64_run_id == "" then null else {
+                  run_id: (if ($amd64_run_id | test("^[0-9]+$")) then ($amd64_run_id | tonumber) else null end),
+                  run_attempt: (if ($amd64_run_attempt | test("^[0-9]+$")) then ($amd64_run_attempt | tonumber) else null end),
+                  artifact_id: (if ($amd64_artifact_id | test("^[0-9]+$")) then ($amd64_artifact_id | tonumber) else null end),
+                  artifact_name: (if $amd64_artifact_name == "" then null else $amd64_artifact_name end),
+                  index_digest: (if $amd64_digest == "" then null else $amd64_digest end),
+                  runtime_manifest_digest: (if $amd64_child_digest == "" then null else $amd64_child_digest end)
+                } end),
+                arm64: {
+                  run_id: (if ($arm64_run_id | test("^[0-9]+$")) then ($arm64_run_id | tonumber) else null end),
+                  run_attempt: (if ($arm64_run_attempt | test("^[0-9]+$")) then ($arm64_run_attempt | tonumber) else null end),
+                  artifact_id: (if ($arm64_artifact_id | test("^[0-9]+$")) then ($arm64_artifact_id | tonumber) else null end),
+                  artifact_name: (if $arm64_artifact_name == "" then null else $arm64_artifact_name end),
+                  index_digest: (if $arm64_digest == "" then null else $arm64_digest end),
+                  runtime_manifest_digest: (if $arm64_child_digest == "" then null else $arm64_child_digest end)
+                }
+              }, run_url: $run_url
+            }' > ascend-quay-promotion-result.json
+
+      - name: Upload promotion record
+        if: ${{ always() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: ascend-quay-promotion-${{ inputs.target }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ascend-quay-promotion-result.json
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Summarize promotion attempt
+        if: ${{ always() }}
+        env:
+          PREPARE_RESULT: ${{ needs.prepare.result }}
+          PROMOTE_RESULT: ${{ needs.promote.result }}
+          DESTINATION: ${{ env.QUAY_REPOSITORY }}:${{ inputs.quay_tag }}
+          DESTINATION_STATE: ${{ needs.promote.outputs.destination_state }}
+          VERIFICATION_RESULT: ${{ needs.promote.outputs.verification_result }}
+          DESTINATION_DIGEST: ${{ needs.promote.outputs.destination_digest }}
+          PLATFORMS: ${{ needs.promote.outputs.platforms }}
+          PUBLICATION_ATTEMPTED: ${{ needs.promote.outputs.publication_attempted }}
+        run: |
+          {
+            echo "## Ascend Quay promotion attempt"
+            echo
+            echo "- Prepare: \`$PREPARE_RESULT\`"
+            echo "- Promote: \`$PROMOTE_RESULT\`"
+            echo "- Publication attempted: \`${PUBLICATION_ATTEMPTED:-false}\`"
+            echo "- Destination: \`$DESTINATION\`"
+            echo "- Destination state: \`${DESTINATION_STATE:-not-inspected}\`"
+            echo "- Verification: \`${VERIFICATION_RESULT:-not-run}\`"
+            echo "- Digest: \`${DESTINATION_DIGEST:-unavailable}\`"
+            echo "- Platforms: \`${PLATFORMS:-unavailable}\`"
+            echo "- Build performed: \`false\`"
+          } >> "$GITHUB_STEP_SUMMARY"
