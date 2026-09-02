@@ -168,6 +168,7 @@ jobs:
           uv run --frozen pytest -v -s -x tests/models/test_checkpoint_tensor_converter.py
           uv run --frozen pytest -v -s -x tests/models/test_deepseek_v4_liger_ops.py
           uv run --frozen pytest -v -s -x tests/models/test_generated_call_site_signatures.py
+          uv run --frozen pytest -v -s -x tests/models/test_return_log_probs_e2e_npu.py
       - name: Run fsdp2/extra_parallel+fsdp2 (e.g. ep+fsdp2, mb+fsdp2, ep+emb+fsdp2) clip grad norm test
         run: |
           uv run --frozen pytest -v -s -x tests/utils/test_extra_parallel_clip_grad_norm.py
