@@ -136,6 +136,18 @@ def test_return_log_probs_matches_logits_reference_npu(toy_path: str, family: st
 
 
 @pytest.mark.parametrize("toy_path,family", _MODELS)
+def test_plain_forward_matches_verl_consumer_contract_npu(toy_path: str, family: str, monkeypatch) -> None:
+    """Reuse the plain-forward verl consumer contract with an NPU model."""
+    monkeypatch.setattr(_base, "_skip_unless_cuda", lambda path: None)
+    monkeypatch.setattr(_base, "_apply_determinism", _apply_npu_determinism)
+    monkeypatch.setattr(
+        _base, "_build_model", lambda path, ce_impl="chunk_loss": _build_npu_model(path, family, ce_impl)
+    )
+    monkeypatch.setattr(_base, "_release", _release_npu)
+    _base.test_plain_forward_matches_verl_consumer_contract(toy_path, family)
+
+
+@pytest.mark.parametrize("toy_path,family", _MODELS)
 def test_return_log_probs_backward_flows_gradients_npu(toy_path: str, family: str, monkeypatch) -> None:
     """Reuse the full backward contract with an NPU model builder."""
     monkeypatch.setattr(_base, "_skip_unless_cuda", lambda path: None)

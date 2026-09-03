@@ -95,6 +95,7 @@ jobs:
           # Model tests
           # "$IMAGE_PYTHON" -m pytest -v -s -x tests/models/test_deepseek_v4_liger_ops.py
           # "$IMAGE_PYTHON" -m pytest -v -s -x tests/models/test_generated_call_site_signatures.py
+          # "$IMAGE_PYTHON" -m pytest -v -s -x tests/models/test_models_logits_equal_v5_npu.py
           # "$IMAGE_PYTHON" -m pytest -v -s -x tests/models/test_return_log_probs_e2e_npu.py
 
           # FSDP and model loading tests

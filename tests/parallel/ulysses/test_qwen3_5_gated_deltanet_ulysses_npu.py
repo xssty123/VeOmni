@@ -74,6 +74,21 @@ def _bind_npu_gdn_ops():
     return module
 
 
+def _assert_npu_forward_deterministic(
+    layer: torch.nn.Module,
+    inputs: torch.Tensor,
+    cu_seqlens: torch.LongTensor,
+    *,
+    repeats: int = 5,
+) -> None:
+    """Require bitwise-stable AscendC outputs for identical packed input."""
+    with torch.no_grad():
+        reference = layer(inputs, attention_mask=None, cu_seq_lens_q=cu_seqlens).detach()
+        for _ in range(repeats - 1):
+            actual = layer(inputs, attention_mask=None, cu_seq_lens_q=cu_seqlens)
+            torch.testing.assert_close(actual, reference, rtol=0, atol=0)
+
+
 def _broadcast_module(module: torch.nn.Module) -> None:
     for param in module.parameters():
         dist.broadcast(param.data, src=0)
@@ -190,6 +205,35 @@ def test_qwen3_5_gated_deltanet_npu_conv1d_slicing_matches_full() -> None:
         torch.testing.assert_close(out_local, out_expected, rtol=0, atol=1e-3)
 
 
+@pytest.mark.parametrize("sequence_lengths", [(128,), (65, 67)])
+def test_qwen3_5_gated_deltanet_npu_forward_deterministic_no_sp(
+    sequence_lengths: tuple[int, ...],
+) -> None:
+    """AscendC packed-varlen GDN is deterministic without sequence parallelism."""
+    if not get_torch_device().is_available():
+        pytest.skip("Ascend NPU is not available")
+
+    modeling = _bind_npu_gdn_ops()
+    config = _TinyQwen3_5Config()
+    device_type = get_device_type()
+
+    torch.manual_seed(42)
+    layer = modeling.Qwen3_5GatedDeltaNet(config, layer_idx=0).to(device=device_type, dtype=_DTYPE)
+    layer.train()
+    inputs = torch.randn(
+        1,
+        sum(sequence_lengths),
+        config.hidden_size,
+        device=device_type,
+        dtype=_DTYPE,
+    )
+    cu_seqlens = _make_cu_seqlens(sequence_lengths)
+
+    no_sp_state = SimpleNamespace(ulysses_enabled=False)
+    with patch(f"{_PATCHED_MODULE}.get_parallel_state", return_value=no_sp_state):
+        _assert_npu_forward_deterministic(layer, inputs, cu_seqlens)
+
+
 def _run_gated_deltanet_npu_sp_fw_bw(
     rank: int,
     world_size: int,
@@ -303,6 +347,61 @@ def _run_gated_deltanet_npu_sp_fw_bw(
         clear_parallel_state()
 
 
+def _run_gated_deltanet_npu_sp_determinism(
+    rank: int,
+    world_size: int,
+    init_file: str,
+    sequence_lengths: tuple[int, ...],
+) -> None:
+    device_type = get_device_type()
+    get_torch_device().set_device(rank)
+    dist.init_process_group(
+        backend=get_dist_comm_backend(),
+        init_method=f"file://{init_file}",
+        rank=rank,
+        world_size=world_size,
+    )
+
+    from veomni.distributed.parallel_state import clear_parallel_state, init_parallel_state
+
+    try:
+        init_parallel_state(dp_size=1, ulysses_size=world_size, device_type=device_type)
+        modeling = _bind_npu_gdn_ops()
+        config = _TinyQwen3_5Config()
+
+        torch.manual_seed(42)
+        layer = modeling.Qwen3_5GatedDeltaNet(config, layer_idx=0).to(device=device_type, dtype=_DTYPE)
+        _broadcast_module(layer)
+        layer.train()
+
+        total_seq_len = sum(sequence_lengths)
+        assert total_seq_len % world_size == 0
+        if rank == 0:
+            full_input = torch.randn(
+                1,
+                total_seq_len,
+                config.hidden_size,
+                device=device_type,
+                dtype=_DTYPE,
+            )
+        else:
+            full_input = torch.empty(
+                1,
+                total_seq_len,
+                config.hidden_size,
+                device=device_type,
+                dtype=_DTYPE,
+            )
+        dist.broadcast(full_input, src=0)
+
+        local_seq_len = total_seq_len // world_size
+        local_input = full_input[:, rank * local_seq_len : (rank + 1) * local_seq_len].contiguous()
+        _assert_npu_forward_deterministic(layer, local_input, _make_cu_seqlens(sequence_lengths))
+    finally:
+        dist.destroy_process_group()
+        clear_parallel_state()
+
+
 @pytest.mark.parametrize("sequence_lengths", [(128,), (65, 67)])
 def test_qwen3_5_gated_deltanet_npu_sp_fw_bw_equivalence(sequence_lengths: tuple[int, ...]) -> None:
     """AscendC packed-varlen GDN under SP matches the non-SP NPU baseline."""
@@ -314,6 +413,25 @@ def test_qwen3_5_gated_deltanet_npu_sp_fw_bw_equivalence(sequence_lengths: tuple
         init_file = os.path.join(tmpdir, "init")
         mp.spawn(
             _run_gated_deltanet_npu_sp_fw_bw,
+            args=(world_size, init_file, sequence_lengths),
+            nprocs=world_size,
+            join=True,
+        )
+
+
+@pytest.mark.parametrize("sequence_lengths", [(128,), (65, 67)])
+def test_qwen3_5_gated_deltanet_npu_forward_deterministic_sp(
+    sequence_lengths: tuple[int, ...],
+) -> None:
+    """AscendC packed-varlen GDN is deterministic under two-way Ulysses SP."""
+    world_size = 2
+    if get_torch_device().device_count() < world_size:
+        pytest.skip(f"Requires at least {world_size} NPUs")
+
+    with tempfile.TemporaryDirectory() as tmpdir:
+        init_file = os.path.join(tmpdir, "init")
+        mp.spawn(
+            _run_gated_deltanet_npu_sp_determinism,
             args=(world_size, init_file, sequence_lengths),
             nprocs=world_size,
             join=True,
