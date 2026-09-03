@@ -21,9 +21,8 @@ without changing their source.
 
 import pytest
 
+from tests.ops import test_seqcls_loss as _base
 from veomni.utils.device import IS_NPU_AVAILABLE
-
-from . import test_seqcls_loss as _base
 
 
 pytestmark = pytest.mark.skipif(not IS_NPU_AVAILABLE, reason="Sequence-classification NPU tests require torch_npu")
