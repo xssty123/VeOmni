@@ -43,8 +43,14 @@ def _package_mock(name: str) -> MagicMock:
 def _npu_mocks() -> dict[str, object]:
     """Build stubs for every NPU / Triton dependency imported by the target."""
     triton_language = _package_mock("triton.language")
+    triton_runtime = _package_mock("triton.runtime")
+    triton_driver = _package_mock("triton.runtime.driver")
+    triton_driver.active.get_current_target.return_value.backend = "cpu"
+    triton_runtime.driver = triton_driver
+
     triton = _package_mock("triton")
     triton.language = triton_language
+    triton.runtime = triton_runtime
     triton.__version__ = "3.2.0"
 
     triton_submodules = [
@@ -52,8 +58,6 @@ def _npu_mocks() -> dict[str, object]:
         "triton.language.extra.libdevice",
         "triton.language.extra.cann",
         "triton.language.extra.cann.extension",
-        "triton.runtime",
-        "triton.runtime.driver",
     ]
 
     mocks: dict[str, object] = {
@@ -61,6 +65,8 @@ def _npu_mocks() -> dict[str, object]:
         "fla_npu": _package_mock("fla_npu"),
         "triton": triton,
         "triton.language": triton_language,
+        "triton.runtime": triton_runtime,
+        "triton.runtime.driver": triton_driver,
     }
     for name in triton_submodules:
         mocks[name] = _package_mock(name)
