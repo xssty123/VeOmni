@@ -167,6 +167,7 @@ jobs:
       - name: Run ops tests
         run: |
           "$IMAGE_PYTHON" -m pytest -v -s -x tests/ops/test_comp.py
+          "$IMAGE_PYTHON" -m pytest -v -s -x tests/ops/test_fla_npu_installation_contract.py
           "$IMAGE_PYTHON" -m pytest -v -s -x tests/ops/test_moe_hw_gate.py
           "$IMAGE_PYTHON" -m pytest -v -s -x tests/ops/test_npu_kernels.py
 
