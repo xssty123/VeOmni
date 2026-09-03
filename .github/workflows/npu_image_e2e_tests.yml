@@ -53,6 +53,7 @@ jobs:
       CI_DATASET_DIR: /mnt/veomni_ci/datasets
       HCCL_HOST_SOCKET_PORT_RANGE: auto
       HCCL_NPU_SOCKET_PORT_RANGE: auto
+      VEOMNI_NPU_IMAGE_GDN: "1"
 
     steps:
       - name: Set ASCEND_VISIBLE_DEVICES from runner slice
@@ -82,6 +83,10 @@ jobs:
         with:
           fetch-depth: 0
           clean: true
+
+      - name: Validate GDN image dependencies
+        run: |
+          "$IMAGE_PYTHON" -m pytest -v -s -x tests/ops/test_fla_npu_installation_contract.py
 
       - name: Run e2e training tests
         run: |
