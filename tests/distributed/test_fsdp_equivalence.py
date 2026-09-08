@@ -31,14 +31,11 @@ import pytest
 from veomni.utils.device import IS_NPU_AVAILABLE, get_device_type
 
 from ..tools import ParallelConfig
-from ..tools.training_utils import is_npu_image_gdn_enabled
 
 
-# Qwen3.5 varlen training needs the optional NPU GDN kernels. The dedicated
-# image workflow opts in only after validating its fla_npu installation.
+# Qwen3.5 GatedDeltaNet has no NPU kernel today (varlen path unsupported).
 _qwen3_5_npu_skip = pytest.mark.skipif(
-    IS_NPU_AVAILABLE and not is_npu_image_gdn_enabled(),
-    reason="Qwen3.5 NPU varlen training requires the GDN-enabled image workflow",
+    IS_NPU_AVAILABLE, reason="Qwen3.5 GatedDeltaNet has no NPU backend (varlen path)"
 )
 _gpt_oss_npu_skip = pytest.mark.skipif(IS_NPU_AVAILABLE, reason="GPT-OSS FSDP equivalence is GPU-only today")
 
