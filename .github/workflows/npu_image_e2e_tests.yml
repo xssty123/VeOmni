@@ -1,0 +1,111 @@
+# Test command baseline: .github/workflows/npu_e2e_test.yml
+# Upstream commit: 1f6674f0a2556702f4db6ac5a51e0fb02c20d84a
+# Run with act in an ALREADY STARTED Ascend image container.
+# There is intentionally no job container or image input: this workflow neither
+# pulls an image nor installs dependencies. See README.md in this directory.
+name: NPU image system tests
+
+on:
+  workflow_dispatch:
+    inputs:
+      python:
+        description: Python executable in the existing image (name or absolute path)
+        required: false
+        default: python
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  npu_image_system_tests:
+    name: VeOmni Ascend image ST
+    runs-on: [self-hosted, 910b-8]
+    timeout-minutes: 90
+    defaults:
+      run:
+        shell: bash --noprofile --norc -eo pipefail {0}
+    env:
+      REQUESTED_IMAGE_PYTHON: ${{ inputs.python || 'python' }}
+      PYTHONPATH: ${{ github.workspace }}
+      NO_PROXY: localhost,127.0.0.1,hf-mirror.com
+      HF_ENDPOINT: https://hf-mirror.com
+      HF_HUB_ENABLE_HF_TRANSFER: "0"
+      HCCL_HOST_SOCKET_PORT_RANGE: auto
+      HCCL_NPU_SOCKET_PORT_RANGE: auto
+
+    steps:
+      - name: Checkout source under test
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          # Preserve local assets and diagnostic files when act binds a checkout.
+          clean: false
+
+      - name: Select existing image environment
+        run: |
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          python_bin="$(command -v "$REQUESTED_IMAGE_PYTHON")"
+          test -x "$python_bin"
+          echo "IMAGE_PYTHON=$python_bin" >> "$GITHUB_ENV"
+          echo "PATH=$(dirname "$python_bin"):$PATH" >> "$GITHUB_ENV"
+
+          # Keep the caller's device slice. Only derive one if neither is set.
+          cards="${ASCEND_RT_VISIBLE_DEVICES:-${ASCEND_VISIBLE_DEVICES:-}}"
+          if [[ -z "$cards" ]]; then
+            name="${RUNNER_NAME:-${HOSTNAME:-}}"
+            cards="0,1,2,3,4,5,6,7"
+            if [[ "$name" =~ ^910b-([0-9]+)$ ]] && (( BASH_REMATCH[1] % 2 != 0 )); then
+              cards="8,9,10,11,12,13,14,15"
+            fi
+            echo "ASCEND_VISIBLE_DEVICES=$cards" >> "$GITHUB_ENV"
+            echo "ASCEND_RT_VISIBLE_DEVICES=$cards" >> "$GITHUB_ENV"
+          fi
+          echo "Requested device slice: $cards"
+          echo "CI_HF_MODELS_DIR=${CI_HF_MODELS_DIR:-/mnt/veomni_ci/models}" >> "$GITHUB_ENV"
+          echo "CI_SAMPLES_DIR=${CI_SAMPLES_DIR:-/mnt/veomni_ci/datasets/custom_data/samples}" >> "$GITHUB_ENV"
+          echo "CI_DATASET_DIR=${CI_DATASET_DIR:-/mnt/veomni_ci/datasets}" >> "$GITHUB_ENV"
+
+      - name: Check image environment without installing packages
+        run: |
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          git rev-parse HEAD
+          npu-smi info
+          command -v torchrun
+          toolkit_info="/usr/local/Ascend/ascend-toolkit/latest/$(uname -m)-linux/ascend_toolkit_install.info"
+          if [[ -f "$toolkit_info" ]]; then
+            cat "$toolkit_info"
+          fi
+          "$IMAGE_PYTHON" - <<'PY'
+          import sys
+          import pytest
+          import torch
+          import torch_npu
+          print("python:", sys.executable)
+          print("pytest:", pytest.__version__)
+          print("torch:", torch.__version__)
+          print("torch_npu:", getattr(torch_npu, "__version__", "unknown"))
+          print("NPU count:", torch.npu.device_count())
+          assert torch.npu.is_available(), "Ascend NPU is not available"
+          assert torch.npu.device_count() >= 8, "Upstream NPU UT/ST require an eight-card slice"
+          PY
+          "$IMAGE_PYTHON" -m pip list
+
+      - name: Run e2e training test
+        run: |
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          "$IMAGE_PYTHON" -m pytest -v -s -x tests/e2e/test_e2e_parallel.py
+
+      - name: Run FSDP equivalence tests
+        run: |
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          "$IMAGE_PYTHON" -m pytest -v -s -x tests/distributed/test_fsdp_equivalence.py
+
+      - name: Run diffusers tests
+        run: |
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          "$IMAGE_PYTHON" -m pytest -v -s -x tests/e2e/test_e2e_parallel.py::test_wan_dit_parallel_align
