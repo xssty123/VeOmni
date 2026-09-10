@@ -142,7 +142,7 @@ jobs:
           clean: true
       - name: Sync dependencies
         run: |
-          uv sync --frozen --python 3.11 --extra npu --group dev
+          uv sync --frozen --python 3.12 --extra npu_aarch64 --group dev
       - name: Install torch_npu from local wheel
         run: |
           uv pip install --python .venv/bin/python --no-deps --reinstall /app/torch_npu-*.whl
@@ -269,8 +269,8 @@ jobs:
         run: |
           uv run --no-sync pytest -v -s -x tests/utils/test_count_flops.py
       - name: Run LoRA save/load test
-        # peft ships under the `npu` extra, so the earlier
-        # `uv sync --extra npu --group dev` step already installs it — no extra
+        # peft ships under the `npu_aarch64` extra, so the earlier
+        # `uv sync --extra npu_aarch64 --group dev` step already installs it — no extra
         # sync needed here.
         run: |
           uv run --no-sync pytest -v -s -x tests/lora/test_lora_trainer_saveload.py

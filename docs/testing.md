@@ -139,7 +139,8 @@ There is no GDN opt-in switch. Missing `fla_npu` dependencies fail the
 installation check instead of silently skipping these cases. Existing
 hardware-availability guards and unrelated GPU-only skips are preserved.
 
-After `uv sync`, both workflows install the following into `.venv`, in order,
+Both workflows use `uv sync --python 3.12 --extra npu_aarch64` for the ARM image. After
+synchronization, they install the following into `.venv`, in order,
 before printing the final package list:
 
 1. `/app/torch_npu-*.whl`
@@ -153,8 +154,8 @@ before printing the final package list:
    packages. This matches the existing `transformers-stable` default group;
    its dependencies are already provided by the initial `uv sync`.
 
-The image must contain exactly one matching wheel for each of the first three
-packages. The `fla_npu` wheel must be built for the target SoC and the same
+The image must contain exactly one Python 3.12 / aarch64-compatible wheel for
+each of the first three packages. The `fla_npu` wheel must be built for the target SoC and the same
 CANN/Torch/torch_npu stack used by CI. The TorchCodec source directory must be
 writable and remain present throughout testing. The image must also provide
 a C++ compiler, FFmpeg development libraries, `pkg-config`, and a shared-library
@@ -171,7 +172,7 @@ followed by a `VideoDecoder` import check in the same environment.
 This checks library loading, not video decoding
 correctness. All pytest commands use `uv run --no-sync` to preserve the local
 installations. ST does not repeat `uv sync` before the diffusers tests, since
-the initial `npu` sync already installs diffusers.
+the initial `npu_aarch64` sync already installs diffusers.
 
 Existing workflow triggers, repository owner guards, runner selection, container
 configuration, Dockerfiles, and dependency pins remain unchanged. Creating a
