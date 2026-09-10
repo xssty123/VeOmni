@@ -115,6 +115,42 @@ tests/
 
 ---
 
+## NPU UT/ST Coverage
+
+The regular NPU workflows, `.github/workflows/npu_unit_tests.yml` and
+`.github/workflows/npu_e2e_test.yml`, run tests in the project environment
+prepared by `uv sync`. Their coverage includes shared device-agnostic tests
+and NPU entry points for generated-model logits/loading, `return_log_probs`,
+sequence-classification losses, Muon FSDP2, and MoE-LoRA EP=2 save/load.
+These entry points reuse the GPU suites' helpers while selecting NPU backends;
+they do not enable CUDA-only cases.
+
+Optional Qwen3.5/Qwen3.5-MoE packed-varlen GDN coverage is controlled by
+`VEOMNI_NPU_GDN=1`. The workflows read this value from the repository variable
+of the same name, defaulting to `0` until the compiled dependencies are ready
+in the **uv environment**. When enabled:
+
+- UT first checks the `fla_npu` distribution and required `torch.ops.npu`
+  registrations, then runs the NPU GatedDeltaNet Ulysses tests.
+- ST runs the same installation check before enabling the Qwen3.5 and
+  Qwen3.5-MoE cases in the existing E2E-parallel and FSDP-equivalence suites.
+- The training helpers select `rms_norm_gated=npu`, `causal_conv1d=npu`, and
+  `chunk_gated_delta_rule=npu_ascendc` for these two model families.
+
+With the switch unset, GDN workflow steps and the corresponding NPU ST cases
+remain skipped; other NPU coverage is enabled normally. With the switch set,
+missing `fla_npu` dependencies fail the installation check instead of silently
+skipping. Direct execution of the GDN UT and installation-contract files also
+requires the dependencies; those files do not consult the opt-in switch.
+
+This coverage migration does not build/install optional wheels, modify
+Dockerfiles, or change dependency pins. Existing workflow triggers, repository
+owner guards, runner selection, and container configuration remain unchanged;
+creating a fork branch alone does not schedule a hardware run. Installing a
+package into the image's global Python does not prove it is available in the
+project's uv environment. Source-build or prebuilt-wheel integration is a
+separate follow-up, including handling the ST workflow's later `uv sync`.
+
 ## Shared Test Infrastructure (`tests/tools/`)
 
 All shared, cross-cutting utilities live in `tests/tools/`:
