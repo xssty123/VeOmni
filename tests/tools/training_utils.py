@@ -36,7 +36,6 @@ _NPU_OPS_DEFAULTS: Dict[str, str] = {
     "load_balancing_loss_implementation": "eager",
 }
 
-_NPU_GDN_ENV = "VEOMNI_NPU_GDN"
 _NPU_GDN_MODELS = {"qwen3_5", "qwen3_5_moe"}
 _NPU_GDN_OVERRIDES = {
     "rms_norm_gated_implementation": "npu",
@@ -134,16 +133,11 @@ _GPU_PER_MODEL_OVERRIDES: Dict[str, Dict[str, str]] = {
 }
 
 
-def is_npu_gdn_enabled() -> bool:
-    """Whether this test environment explicitly enables the optional AscendC GDN path."""
-    return os.environ.get(_NPU_GDN_ENV) == "1"
-
-
 def _npu_overrides(model_name: Optional[str]) -> Dict[str, str]:
     merged = dict(_NPU_OPS_DEFAULTS)
     if model_name is not None:
         merged.update(_NPU_PER_MODEL_OVERRIDES.get(model_name, {}))
-        if model_name in _NPU_GDN_MODELS and is_npu_gdn_enabled():
+        if model_name in _NPU_GDN_MODELS:
             merged.update(_NPU_GDN_OVERRIDES)
     return merged
 
@@ -196,9 +190,8 @@ def make_npu_ops_config(model_name: Optional[str] = None, **overrides) -> OpsImp
     """
     merged = _npu_overrides(model_name)
     merged.update(overrides)
-    # Keep optional Qwen3.5 GDN dependencies unbound until the test environment
-    # opts in. When ``VEOMNI_NPU_GDN=1``, ``_npu_overrides`` has
-    # already selected npu/npu_ascendc and these defaults do not overwrite it.
+    # Qwen3.5 uses npu/npu_ascendc by default. Other model families keep GDN
+    # dependencies unbound unless the caller explicitly selects those backends.
     merged.setdefault("rms_norm_gated_implementation", "eager")
     merged.setdefault("causal_conv1d_implementation", "eager")
     merged.setdefault("chunk_gated_delta_rule_implementation", "eager")

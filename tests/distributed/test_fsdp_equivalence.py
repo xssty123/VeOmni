@@ -31,15 +31,8 @@ import pytest
 from veomni.utils.device import IS_NPU_AVAILABLE, get_device_type
 
 from ..tools import ParallelConfig
-from ..tools.training_utils import is_npu_gdn_enabled
 
 
-# Qwen3.5 varlen training needs the optional NPU GDN kernels. Enable these
-# cases with VEOMNI_NPU_GDN=1 only after preparing the runtime dependencies.
-_qwen3_5_npu_skip = pytest.mark.skipif(
-    IS_NPU_AVAILABLE and not is_npu_gdn_enabled(),
-    reason="Qwen3.5 NPU varlen training requires GDN dependencies and VEOMNI_NPU_GDN=1",
-)
 _gpt_oss_npu_skip = pytest.mark.skipif(IS_NPU_AVAILABLE, reason="GPT-OSS FSDP equivalence is GPU-only today")
 
 _DEFAULT_RTOL = 1e-1
@@ -232,7 +225,6 @@ _text_test_cases = [
         _DEFAULT_RTOL,
         _DEFAULT_ATOL,
         id="qwen3_5",
-        marks=_qwen3_5_npu_skip,
     ),
     pytest.param(
         "qwen3_5_moe",
@@ -241,7 +233,6 @@ _text_test_cases = [
         _DEFAULT_RTOL,
         _DEFAULT_ATOL,
         id="qwen3_5_moe",
-        marks=_qwen3_5_npu_skip,
     ),
     pytest.param(
         "deepseek_v3",

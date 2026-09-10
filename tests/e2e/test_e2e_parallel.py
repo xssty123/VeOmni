@@ -13,7 +13,7 @@ from veomni.utils.device import IS_CUDA_AVAILABLE, IS_NPU_AVAILABLE, get_gpu_com
 from veomni.utils.import_utils import is_diffusers_available, is_quack_gemm_available
 
 from ..tools import DummyDataset, build_torchrun_cmd, compare_metrics, print_comparison_table
-from ..tools.training_utils import is_npu_gdn_enabled, make_eager_ops_config
+from ..tools.training_utils import make_eager_ops_config
 from .utils import prepare_exec_cmd
 
 
@@ -21,12 +21,6 @@ from .utils import prepare_exec_cmd
 # lists with a TODO; uncomment once the corresponding model gains a v5
 # patchgen path.
 _dit_only = pytest.mark.skipif(not is_diffusers_available(), reason="Requires diffusers")
-# Qwen3.5 varlen training needs the optional NPU GDN kernels. Enable these
-# cases with VEOMNI_NPU_GDN=1 only after preparing the runtime dependencies.
-_qwen3_5_npu_skip = pytest.mark.skipif(
-    IS_NPU_AVAILABLE and not is_npu_gdn_enabled(),
-    reason="Qwen3.5 NPU varlen training requires GDN dependencies and VEOMNI_NPU_GDN=1",
-)
 _qwen_image_npu_skip = pytest.mark.skipif(IS_NPU_AVAILABLE, reason="Qwen-Image training is GPU-only for now")
 
 
@@ -284,7 +278,6 @@ qwen3vl_test_cases = [
         _DEFAULT_RTOL,
         _DEFAULT_ATOL,
         None,  # max_sp_size
-        marks=_qwen3_5_npu_skip,
     ),
     pytest.param(
         "qwen3_5",
@@ -293,7 +286,6 @@ qwen3vl_test_cases = [
         _DEFAULT_RTOL,
         _DEFAULT_ATOL,
         None,  # max_sp_size
-        marks=_qwen3_5_npu_skip,
     ),
 ]
 

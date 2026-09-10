@@ -125,31 +125,57 @@ sequence-classification losses, Muon FSDP2, and MoE-LoRA EP=2 save/load.
 These entry points reuse the GPU suites' helpers while selecting NPU backends;
 they do not enable CUDA-only cases.
 
-Optional Qwen3.5/Qwen3.5-MoE packed-varlen GDN coverage is controlled by
-`VEOMNI_NPU_GDN=1`. The workflows read this value from the repository variable
-of the same name, defaulting to `0` until the compiled dependencies are ready
-in the **uv environment**. When enabled:
+Qwen3.5/Qwen3.5-MoE packed-varlen GDN coverage runs by default and requires
+the compiled dependencies in the **uv environment**:
 
 - UT first checks the `fla_npu` distribution and required `torch.ops.npu`
   registrations, then runs the NPU GatedDeltaNet Ulysses tests.
-- ST runs the same installation check before enabling the Qwen3.5 and
+- ST runs the same installation check before running the Qwen3.5 and
   Qwen3.5-MoE cases in the existing E2E-parallel and FSDP-equivalence suites.
 - The training helpers select `rms_norm_gated=npu`, `causal_conv1d=npu`, and
   `chunk_gated_delta_rule=npu_ascendc` for these two model families.
 
-With the switch unset, GDN workflow steps and the corresponding NPU ST cases
-remain skipped; other NPU coverage is enabled normally. With the switch set,
-missing `fla_npu` dependencies fail the installation check instead of silently
-skipping. Direct execution of the GDN UT and installation-contract files also
-requires the dependencies; those files do not consult the opt-in switch.
+There is no GDN opt-in switch. Missing `fla_npu` dependencies fail the
+installation check instead of silently skipping these cases. Existing
+hardware-availability guards and unrelated GPU-only skips are preserved.
 
-This coverage migration does not build/install optional wheels, modify
-Dockerfiles, or change dependency pins. Existing workflow triggers, repository
-owner guards, runner selection, and container configuration remain unchanged;
-creating a fork branch alone does not schedule a hardware run. Installing a
-package into the image's global Python does not prove it is available in the
-project's uv environment. Source-build or prebuilt-wheel integration is a
-separate follow-up, including handling the ST workflow's later `uv sync`.
+After `uv sync`, both workflows install the following into `.venv`, in order,
+before printing the final package list:
+
+1. `/app/torch_npu-*.whl`
+2. `/app/triton_ascend-*.whl`
+3. `/app/flash_linear_attention_npu-*.whl`
+4. TorchCodec v0.10.0 from `/app/torchcodec`, compiled as an editable install by
+   `/app/torchcodec/install_torchcodec_Ascend.sh`. Copy the existing
+   `docs/get_started/installation/install_torchcodec_Ascend.sh` into that source
+   directory when preparing the image.
+5. `transformers==5.9.0`, explicitly installed with `--no-deps` after the local
+   packages. This matches the existing `transformers-stable` default group;
+   its dependencies are already provided by the initial `uv sync`.
+
+The image must contain exactly one matching wheel for each of the first three
+packages. The `fla_npu` wheel must be built for the target SoC and the same
+CANN/Torch/torch_npu stack used by CI. The TorchCodec source directory must be
+writable and remain present throughout testing. The image must also provide
+a C++ compiler, FFmpeg development libraries, `pkg-config`, and a shared-library
+Python usable by the CI environment. The original installer attempts to install
+missing FFmpeg development packages via the system package manager; preinstall
+them in the image to avoid that work during CI. The workflow and installer load
+`/usr/local/Ascend/ascend-toolkit/set_env.sh`; `ASCEND_ENV` and
+`TORCHCODEC_SOURCE_DIR` can override the CANN script and source paths.
+
+CI first installs pip into `.venv` and activates it so the original script's
+`python` and `pip` commands use the CI environment. The script installs its
+Python build tools and compiles with `pip install -e . --no-build-isolation`,
+followed by a `VideoDecoder` import check in the same environment.
+This checks library loading, not video decoding
+correctness. All pytest commands use `uv run --no-sync` to preserve the local
+installations. ST does not repeat `uv sync` before the diffusers tests, since
+the initial `npu` sync already installs diffusers.
+
+Existing workflow triggers, repository owner guards, runner selection, container
+configuration, Dockerfiles, and dependency pins remain unchanged. Creating a
+fork branch alone does not schedule a hardware run.
 
 ## Shared Test Infrastructure (`tests/tools/`)
 

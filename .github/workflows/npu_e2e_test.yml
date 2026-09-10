@@ -77,8 +77,6 @@ jobs:
         --device /dev/davinci12 --device /dev/davinci13 --device /dev/davinci14 --device /dev/davinci15
         --shm-size 16g
     env:
-      # Enable only after optional GDN dependencies are available in the uv environment.
-      VEOMNI_NPU_GDN: ${{ vars.VEOMNI_NPU_GDN || '0' }}
       NO_PROXY: "localhost,127.0.0.1,hf-mirror.com"
       HF_ENDPOINT: "https://hf-mirror.com"
       HF_HUB_ENABLE_HF_TRANSFER: "0" # This is more stable
@@ -134,16 +132,40 @@ jobs:
       - name: Sync dependencies
         run: |
           uv sync --frozen --python 3.11 --extra npu --group dev
+      - name: Install torch_npu from local wheel
+        run: |
+          uv pip install --python .venv/bin/python --no-deps --reinstall /app/torch_npu-*.whl
+      - name: Install triton-ascend from local wheel
+        run: |
+          uv pip install --python .venv/bin/python --no-deps --reinstall /app/triton_ascend-*.whl
+      - name: Install fla_npu from local wheel
+        run: |
+          uv pip install --python .venv/bin/python --no-deps --reinstall /app/flash_linear_attention_npu-*.whl
+      - name: Install torchcodec from local source
+        shell: bash
+        run: |
+          ASCEND_ENV="${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          source "$ASCEND_ENV"
+          uv pip install --python .venv/bin/python pip
+          source .venv/bin/activate
+          cd "${TORCHCODEC_SOURCE_DIR:-/app/torchcodec}"
+          bash install_torchcodec_Ascend.sh "$ASCEND_ENV"
+          # Exports in the installer subprocess do not persist in this shell.
+          export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib64:${LD_LIBRARY_PATH:-}"
+          python -c "import torchcodec; from torchcodec.decoders import VideoDecoder; print(torchcodec.__file__); print('VideoDecoder import: Success')"
+          printf 'LD_LIBRARY_PATH=%s\n' "$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+      - name: Install transformers 5.9.0
+        run: |
+          uv pip install --python .venv/bin/python --no-deps "transformers==5.9.0"
       - name: Check final pip list
         run: |
-          uv pip list
-      - name: Validate optional NPU GDN dependencies
-        if: env.VEOMNI_NPU_GDN == '1'
+          uv pip list --python .venv/bin/python
+      - name: Validate NPU GDN dependencies
         run: |
-          uv run --frozen pytest -v -s -x tests/ops/test_fla_npu_installation_contract.py
+          uv run --no-sync pytest -v -s -x tests/ops/test_fla_npu_installation_contract.py
       - name: Run e2e training test
         run: |
-          uv run --frozen pytest -v -s -x tests/e2e/test_e2e_parallel.py
+          uv run --no-sync pytest -v -s -x tests/e2e/test_e2e_parallel.py
       - name: Free NPUs between test steps
         # pytest's mp.spawn / torchrun workers sometimes outlive the pytest
         # session — they hold tens of GiB on NPU and OOM the next test.
@@ -160,7 +182,7 @@ jobs:
           fi
       - name: Run FSDP equivalence tests
         run: |
-          uv run --frozen pytest -v -s -x tests/distributed/test_fsdp_equivalence.py
+          uv run --no-sync pytest -v -s -x tests/distributed/test_fsdp_equivalence.py
       - name: Free NPUs between test steps
         if: always()
         run: |
@@ -172,11 +194,6 @@ jobs:
             sleep 3
             npu-smi info || true
           fi
-      - name: Sync dependencies [diffusers]
-        run: |
-          # diffusers ships under the `npu` extra (rolled in from the dropped
-          # `dit` extra), so no additional extra is needed here.
-          uv sync --frozen --python 3.11 --extra npu --group dev
       - name: Run diffusers tests
         run: |
-          uv run --frozen pytest -v -s -x tests/e2e/test_e2e_parallel.py::test_wan_dit_parallel_align
+          uv run --no-sync pytest -v -s -x tests/e2e/test_e2e_parallel.py::test_wan_dit_parallel_align
