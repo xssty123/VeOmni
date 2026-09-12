@@ -1,0 +1,304 @@
+# # Tests layout
+
+name: A5 local NPU unit tests
+
+on:
+  # Trigger the workflow on push or pull request,
+  # but only for the main branch
+  push:
+    branches:
+      - main
+      - v0.*
+    paths:
+      - "**/*.py"
+      - "!scripts/**/*.py"
+      - .github/workflows/npu_unit_tests.yml
+      - "pyproject.toml"
+      - "uv.lock"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - "**/*.py"
+      - "!scripts/**/*.py"
+      - .github/workflows/npu_unit_tests.yml
+      - "pyproject.toml"
+      - "uv.lock"
+
+# Cancel jobs on the same ref if a new one is triggered
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Declare permissions just read content.
+permissions:
+  contents: read
+
+jobs:
+  npu_unit_tests:
+    name: VeOmni A5 local UT
+    runs-on: [self-hosted, linux, ARM64]
+    timeout-minutes: 120
+    container:
+      image: a5-veomni-b060:v1
+      env:
+        ASCEND_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
+        ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
+      volumes:
+      - /home/z00832855/latest_proxy:/tmp/latest_proxy:ro
+      - /home:/home
+      - /root/ascend:/root/ascend
+      - /etc/ascend_install.info:/etc/ascend_install.info
+      - /etc/hccn.conf:/etc/hccn.conf
+      - /usr/bin/msnpureport:/usr/bin/msnpureport
+      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
+      - /usr/local/sbin/npu-smi:/usr/local/sbin/npu-smi
+      - /usr/local/Ascend/driver:/usr/local/Ascend/driver
+      - /usr/local/dcmi:/usr/local/dcmi
+      - /usr/lib64/libnl-genl-3.so.200:/usr/lib64/libnl-genl-3.so.200
+      - /data_2:/data_2
+      - /data_1:/data_1
+      - /root/.cache/:/root/.cache/
+      - /autotest:/autotest
+      - /usr/lib64/libnl-3.so.200:/usr/lib64/libnl-3.so.200
+      - /home/data:/home/data
+      - /mnt:/mnt
+      - /pta_data:/pta_data
+      - /usr/lib64/urma:/usr/lib64/urma
+      - /data:/data
+      - /data1:/data1
+      - /data_euleros/data1:/data_euleros/data1
+      - /usr/lib64/liburma_common.so:/usr/lib64/liburma_common.so
+      - /usr/lib64/liburma_common.so.0:/usr/lib64/liburma_common.so.0
+      - /usr/lib64/liburma_common.so.0.0.1:/usr/lib64/liburma_common.so.0.0.1
+      - /usr/lib64/liburma.so:/usr/lib64/liburma.so
+      - /usr/lib64/liburma.so.0:/usr/lib64/liburma.so.0
+      - /usr/lib64/liburma.so.0.0.3:/usr/lib64/liburma.so.0.0.3
+      - /usr/lib64/libummu.so.1:/usr/lib64/libummu.so.1
+      - /usr/lib64/libummu.so.1.0.5:/usr/lib64/libummu.so.1.0.5
+      - /dev/log:/dev/log
+      options: --privileged --ipc=host --shm-size=720g --device=/dev/hisi_hdc --device=/dev/davinci_manager --device=/dev/davinci0
+        --device=/dev/davinci1 --device=/dev/davinci2 --device=/dev/davinci3 --device=/dev/davinci4 --device=/dev/davinci5
+        --device=/dev/davinci6 --device=/dev/davinci7 --device=/dev/uburma --device=/dev/ummu
+    env:
+      NO_PROXY: "localhost,127.0.0.1,hf-mirror.com"
+      HF_ENDPOINT: "https://hf-mirror.com"
+      HF_HUB_ENABLE_HF_TRANSFER: "0" # This is more stable
+      # Shared NFS paths (see workflow container.volumes and
+      # github_runner/group_vars/all.yml::veomni_ci_nfs_*).
+      CI_HF_MODELS_DIR: "/home/z00832855/ci/ut/models"
+      CI_SAMPLES_DIR: "/home/z00832855/ci/ut/samples"
+      CI_DATASET_DIR: "/home/z00832855/ci/ut/datasets"
+      # uv's default 30s timeout fires intermittently on the CN runners
+      # while pulling large wheels (e.g. torch-npu, virtualenv); bump to
+      # 5 min so a slow link doesn't fail the whole sync.
+      UV_HTTP_TIMEOUT: "300"
+      # CANN 9.0.0: let OS assign HCCL ports (auto) to avoid port exhaustion
+      # and counter overflow to 65536 when many sub-communicators run sequentially.
+      HCCL_HOST_SOCKET_PORT_RANGE: "auto"
+      HCCL_NPU_SOCKET_PORT_RANGE: "auto"
+
+    steps:
+      - name: Initialize A5 environment
+        shell: bash
+        run: |
+          source /usr/local/Ascend/ascend-toolkit/set_env.sh
+          export LD_LIBRARY_PATH="/usr/lib64/:/usr/local/Ascend/driver/lib64/driver:/usr/local/Ascend/driver/lib64/common:/usr/lib/aarch64-linux-gnu/:${LD_LIBRARY_PATH:-}"
+          printf 'LD_LIBRARY_PATH=%s\n' "$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+      - name: Set up proxy
+        run: |
+          CURRENT_PROXY=$(cat /tmp/latest_proxy)
+          echo "HTTP_PROXY=$CURRENT_PROXY" >> $GITHUB_ENV
+          echo "HTTPS_PROXY=$CURRENT_PROXY" >> $GITHUB_ENV
+          echo "http_proxy=$CURRENT_PROXY" >> $GITHUB_ENV
+          echo "https_proxy=$CURRENT_PROXY" >> $GITHUB_ENV
+      - name: Check npu and CANN info
+        run: |
+          cat /usr/local/Ascend/ascend-toolkit/latest/"$(uname -i)"-linux/ascend_toolkit_install.info
+          npu-smi info
+      - name: Check initial pip list from image
+        run: |
+          pip list
+      - name: Checkout ByteDance-Seed/VeOmni repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          clean: true
+      - name: Sync dependencies
+        run: |
+          # uv sync --system-certs --frozen --python 3.12 --extra npu_aarch64 --group dev
+          uv sync --locked --python 3.12 --extra npu_aarch64 --group dev --allow-insecure-host github.com --allow-insecure-host objects.githubusercontent.com --allow-insecure-host download-r2.pytorch.org
+
+      - name: Install torch_npu from local wheel
+        run: |
+          uv pip install --python .venv/bin/python --no-deps --reinstall /app/torch_npu-*.whl
+      - name: Install triton-ascend from local wheel
+        run: |
+          uv pip install --python .venv/bin/python --no-deps --reinstall /app/triton_ascend-*.whl
+      - name: Install fla_npu from local wheel
+        run: |
+          uv pip install --python .venv/bin/python --no-deps --reinstall /app/flash_linear_attention_npu-*.whl
+          uv pip install --python .venv/bin/python --system-certs --index-url https://pypi.org/simple pybind11 wheel setuptools cmake ninja
+      - name: Install torchcodec from local source
+        shell: bash
+        run: |
+          ASCEND_ENV="${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          source "$ASCEND_ENV"
+          uv pip install --python .venv/bin/python pip
+          source .venv/bin/activate
+          cd "${TORCHCODEC_SOURCE_DIR:-/app/torchcodec}"
+          PIP_INDEX_URL=https://pypi.org/simple bash install_torchcodec_Ascend.sh "$ASCEND_ENV"
+          # Exports in the installer subprocess do not persist in this shell.
+          export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib64:${LD_LIBRARY_PATH:-}"
+          python -c "import torchcodec; from torchcodec.decoders import VideoDecoder; print(torchcodec.__file__); print('VideoDecoder import: Success')"
+          printf 'LD_LIBRARY_PATH=%s\n' "$LD_LIBRARY_PATH" >> "$GITHUB_ENV"
+      - name: Install transformers 5.9.0
+        run: |
+          uv pip install --python .venv/bin/python --no-deps "transformers==5.9.0"
+      - name: Check final pip list
+        run: |
+          uv pip list --python .venv/bin/python
+      - name: Run additional NPU unit tests
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          echo "Running additional NPU unit tests."
+
+          # Validate compiled GDN dependencies before running the additional tests.
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_fla_npu_installation_contract.py
+
+          # Parallel tests
+          uv run --no-sync python -m pytest -v -s -x tests/parallel/ulysses/test_qwen3_5_gated_deltanet_ulysses_npu.py
+          uv run --no-sync python -m pytest -v -s -x tests/parallel/ulysses/test_op_wrapper.py
+          uv run --no-sync python -m pytest -v -s -x tests/parallel/context_parallel
+
+          # Model tests
+          uv run --no-sync python -m pytest -v -s -x tests/models/test_deepseek_v4_liger_ops.py
+          uv run --no-sync python -m pytest -v -s -x tests/models/test_generated_call_site_signatures.py
+          uv run --no-sync python -m pytest -v -s -x tests/models/test_models_logits_equal_v5_npu.py
+          uv run --no-sync python -m pytest -v -s -x tests/models/test_return_log_probs_e2e_npu.py
+
+          # FSDP and model loading tests
+          uv run --no-sync python -m pytest -v -s -x tests/utils/test_rank0_load_and_broadcast_weights.py
+
+          # Ops tests
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_chunk_loss.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_chunk_topk_distill.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_chunked_fused_linear_grad_gating.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_eager_kernels_cpu.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_expert_scatter_index.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_fused_load_balancing_loss.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_gdn_ascend_gate.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_gdn_varlen_metadata.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_kernel_registry_sanity.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_npu_kernels_extended.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_seqcls_loss_npu.py
+
+          # Distributed and optimizer tests
+          uv run --no-sync python -m pytest -v -s -x tests/distributed/test_muon_zero_comm_shard.py
+          uv run --no-sync python -m pytest -v -s -x tests/optim/test_muon_unit.py
+          uv run --no-sync python -m pytest -v -s -x tests/optim/test_muon_fsdp2_parity.py
+          uv run --no-sync python -m pytest -v -s -x tests/optim/test_muon_fsdp2_smoke_npu.py
+          uv run --no-sync python -m pytest -v -s -x tests/optim/test_optimizer_vlm_param_groups.py
+
+          # LoRA tests
+          uv run --no-sync python -m pytest -v -s -x tests/lora/test_target_mapping.py
+          uv run --no-sync python -m pytest -v -s -x tests/lora/test_veomni_lora_moe_native.py
+          uv run --no-sync python -m pytest -v -s -x tests/lora/test_moe_lora_eager.py
+          uv run --no-sync python -m pytest -v -s -x tests/lora/test_moe_lora_trainer.py
+          uv run --no-sync python -m pytest -v -s -x tests/lora/test_moe_lora_ep2_npu.py
+
+      - name: Run parallel tests
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/parallel/ulysses/test_ulysses.py
+          uv run --no-sync python -m pytest -v -s -x tests/parallel/ulysses/test_all_gather.py
+          uv run --no-sync python -m pytest -v -s -x tests/parallel/ulysses/test_slice_input_tensor.py
+          uv run --no-sync python -m pytest -v -s -x tests/parallel/encoder_data_balance/test_balance_reverse.py
+          uv run --no-sync python -m pytest -v -s -x tests/parallel/encoder_data_balance/test_balance_sorting_algo.py
+          uv run --no-sync python -m pytest -v -s -x tests/parallel/test_ddp_sp_grad_sync.py
+          uv run --no-sync python -m pytest -v -s -x tests/parallel/test_parallel_state_registry.py
+      - name: Run models tests
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/models/test_model_registry.py
+          uv run --no-sync python -m pytest -v -s -x tests/models/test_models_patch.py
+          uv run --no-sync python -m pytest -v -s -x tests/models/test_padded_packed_loss.py
+          uv run --no-sync python -m pytest -v -s -x tests/models/test_vlm_trainer.py
+          uv run --no-sync python -m pytest -v -s -x tests/trainer/test_aux_metrics.py
+          uv run --no-sync python -m pytest -v -s -x tests/lora/test_vlm_lora.py
+          uv run --no-sync python -m pytest -v -s -x tests/models/test_checkpoint_tensor_converter.py
+      - name: Run fsdp2/extra_parallel+fsdp2 (e.g. ep+fsdp2, mb+fsdp2, ep+emb+fsdp2) clip grad norm test
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/utils/test_extra_parallel_clip_grad_norm.py
+      - name: Run MoE ep_sharded_stream_load matrix (non-PEFT)
+        # Device-agnostic loader matrix (build_parallelize_model + the 3 weight
+        # loaders over EP+FSDP2 on a fake MoE model; no Triton / MoE kernel, so
+        # it runs on NPU via hccl).
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/utils/test_moe_ep_sharded_load_matrix.py
+      - name: Run checkpoint callback unit tests
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/checkpoints/test_checkpoint_callback.py
+          uv run --no-sync python -m pytest -v -s -x tests/checkpoints/test_dcp_checkpointer.py
+      - name: Run e2e dcp save and load test
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/checkpoints/test_trainer_saveload.py
+      - name: Run distributed tests (dummy_forward)
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/distributed/test_async_offload_unit.py
+          uv run --no-sync python -m pytest -v -s -x tests/distributed/test_dummy_forward.py
+      - name: Run data tests
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/data
+      - name: Run ops tests
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_comp.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_moe_hw_gate.py
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_npu_kernels.py
+      - name: Run utils tests
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/utils/test_count_flops.py
+      - name: Run LoRA save/load test
+        # peft ships under the `npu_aarch64` extra, so the earlier
+        # `uv sync --extra npu_aarch64 --group dev` step already installs it — no extra
+        # sync needed here.
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/lora/test_lora_trainer_saveload.py
+      - name: Run MoE-LoRA NPU fused vs eager parity
+        # Numerical gate for the new NPU fused MoE-LoRA autograd composition
+        # (shared + independent; forward + A/B grads; EP=1 vs non-EP).
+        # Cheap single-process; run before the multi-process stream-load test.
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/lora/test_moe_lora_fused_npu.py
+      - name: Run MoE-LoRA ep_sharded_stream_load (PEFT, EP=2)
+        # Exercises the PEFT ep_sharded adapter streaming *and* the NPU
+        # fused MoE-LoRA EP kernel (fused_npu): the test auto-selects
+        # fused_npu on Ascend, so both the loader path and the EP forward
+        # are validated on NPU here.
+        shell: bash
+        run: |
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/lora/test_moe_lora_ep_sharded_stream_load.py
