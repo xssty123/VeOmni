@@ -42,9 +42,11 @@ jobs:
     needs: lint
     if: github.repository_owner == 'ByteDance-Seed'
     name: VeOmni Ascend test (self-host)
+    # TODO(A3): replace the legacy runner label and review its device-slice mapping.
     runs-on: [self-hosted, 910b-8]
     timeout-minutes: 90
     container:
+      # TODO(A3): select a Python 3.12/aarch64 image containing matching /app artifacts.
       image: quay.io/ascend/veomni:veomni-9.0.0-910b-ubuntu22.04-py3.11-torch2.10.0-latest
       volumes:
         - /usr/local/dcmi:/usr/local/dcmi
@@ -124,6 +126,13 @@ jobs:
       - name: Check initial pip list from image
         run: |
           pip list
+      - name: Set up proxy
+        run: |
+          CURRENT_PROXY=$(cat /tmp/latest_proxy)
+          echo "HTTP_PROXY=$CURRENT_PROXY" >> "$GITHUB_ENV"
+          echo "HTTPS_PROXY=$CURRENT_PROXY" >> "$GITHUB_ENV"
+          echo "http_proxy=$CURRENT_PROXY" >> "$GITHUB_ENV"
+          echo "https_proxy=$CURRENT_PROXY" >> "$GITHUB_ENV"
       - name: Checkout ByteDance-Seed/VeOmni repo
         uses: actions/checkout@v4
         with:
@@ -141,6 +150,9 @@ jobs:
       - name: Install fla_npu from local wheel
         run: |
           uv pip install --python .venv/bin/python --no-deps --reinstall /app/flash_linear_attention_npu-*.whl
+      - name: Install torchcodec build dependencies
+        run: |
+          uv pip install --python .venv/bin/python --system-certs --index-url https://pypi.org/simple pybind11 wheel setuptools cmake ninja
       - name: Install torchcodec from local source
         shell: bash
         run: |
@@ -149,7 +161,7 @@ jobs:
           uv pip install --python .venv/bin/python pip
           source .venv/bin/activate
           cd "${TORCHCODEC_SOURCE_DIR:-/app/torchcodec}"
-          bash install_torchcodec_Ascend.sh "$ASCEND_ENV"
+          PIP_INDEX_URL=https://pypi.org/simple bash install_torchcodec_Ascend.sh "$ASCEND_ENV"
           # Exports in the installer subprocess do not persist in this shell.
           export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib64:${LD_LIBRARY_PATH:-}"
           python -c "import torchcodec; from torchcodec.decoders import VideoDecoder; print(torchcodec.__file__); print('VideoDecoder import: Success')"
@@ -161,11 +173,15 @@ jobs:
         run: |
           uv pip list --python .venv/bin/python
       - name: Validate NPU GDN dependencies
+        shell: bash
         run: |
-          uv run --no-sync pytest -v -s -x tests/ops/test_fla_npu_installation_contract.py
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/ops/test_fla_npu_installation_contract.py
       - name: Run e2e training test
+        shell: bash
         run: |
-          uv run --no-sync pytest -v -s -x tests/e2e/test_e2e_parallel.py
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/e2e/test_e2e_parallel.py
       - name: Free NPUs between test steps
         # pytest's mp.spawn / torchrun workers sometimes outlive the pytest
         # session — they hold tens of GiB on NPU and OOM the next test.
@@ -181,8 +197,10 @@ jobs:
             npu-smi info || true
           fi
       - name: Run FSDP equivalence tests
+        shell: bash
         run: |
-          uv run --no-sync pytest -v -s -x tests/distributed/test_fsdp_equivalence.py
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/distributed/test_fsdp_equivalence.py
       - name: Free NPUs between test steps
         if: always()
         run: |
@@ -195,5 +213,7 @@ jobs:
             npu-smi info || true
           fi
       - name: Run diffusers tests
+        shell: bash
         run: |
-          uv run --no-sync pytest -v -s -x tests/e2e/test_e2e_parallel.py::test_wan_dit_parallel_align
+          source "${ASCEND_ENV:-/usr/local/Ascend/ascend-toolkit/set_env.sh}"
+          uv run --no-sync python -m pytest -v -s -x tests/e2e/test_e2e_parallel.py::test_wan_dit_parallel_align

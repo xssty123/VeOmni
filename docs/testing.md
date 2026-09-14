@@ -169,14 +169,29 @@ CI first installs pip into `.venv` and activates it so the original script's
 `python` and `pip` commands use the CI environment. The script installs its
 Python build tools and compiles with `pip install -e . --no-build-isolation`,
 followed by a `VideoDecoder` import check in the same environment.
+The workflows preinstall `pybind11`, `wheel`, `setuptools`, `cmake`, and `ninja`
+from PyPI with system certificate support, and set `PIP_INDEX_URL` to PyPI for
+the installer. They read the proxy from the existing `/tmp/latest_proxy` mount
+before checkout and dependency synchronization.
 This checks library loading, not video decoding
-correctness. All pytest commands use `uv run --no-sync` to preserve the local
-installations. ST does not repeat `uv sync` before the diffusers tests, since
+correctness. Every test step uses Bash and sources CANN in its own shell;
+all pytest commands use `uv run --no-sync python -m pytest` to select the project
+Python and preserve the local installations. ST does not repeat `uv sync` before the diffusers tests, since
 the initial `npu_aarch64` sync already installs diffusers.
 
 Existing workflow triggers, repository owner guards, runner selection, container
 configuration, Dockerfiles, and dependency pins remain unchanged. Creating a
 fork branch alone does not schedule a hardware run.
+
+The regular workflows are being prepared for A3/910C. Their execution steps
+incorporate the A5-tested environment fixes, but the legacy `910b-8` runner,
+910B image, and runner-name-based device-slice mapping still need deployment
+updates. The A3 image must provide Python 3.12/aarch64-compatible `/app`
+artifacts; in particular, build `fla_npu` for A3 (`ascend910_93`) against the
+same CANN/Torch/torch_npu stack used after synchronization and local wheel
+installation. A5 `ascend950` artifacts do not establish A3 compatibility.
+The `AICPU_CacheDisable` setting remains confined to the A5 workflows; it is
+not enabled by default in the regular workflows without A3 validation.
 
 ### A5 local ST with act
 
