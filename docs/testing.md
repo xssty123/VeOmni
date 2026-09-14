@@ -178,6 +178,38 @@ Existing workflow triggers, repository owner guards, runner selection, container
 configuration, Dockerfiles, and dependency pins remain unchanged. Creating a
 fork branch alone does not schedule a hardware run.
 
+### A5 local ST with act
+
+The repository-root `npu_e2e_test_a5.yml` adapts the NPU ST workflow to the
+same local A5 environment as `npu_unit_tests_a5.yml` (baseline commit
+`79c03e8e`): image `a5-veomni-b060:v1`, cards 0–7, device/library mounts,
+proxy setup, Python 3.12 `npu_aarch64` sync with the dev group, and the same
+ordered local dependency installations. It reuses the UT asset directories
+under `/home/z00832855/ci/ut/`; adjust the three `CI_*_DIR` values if ST assets
+are staged elsewhere.
+
+ST preserves the regular workflow's ordered pytest entries: the `fla_npu`
+installation contract, E2E parallel training, FSDP equivalence, and the
+explicit Wan DiT alignment entry. Existing case-level skips, the two cleanup
+steps, and the 90-minute job timeout are preserved. Each test step uses Bash,
+sources CANN, exports `HCCL_OP_EXPANSION_MODE=AICPU_CacheDisable`, and runs
+`uv run --no-sync python -m pytest`. Dependency and cleanup steps do not set
+this HCCL variable.
+
+Run from the repository root on the A5 server:
+
+```bash
+set -o pipefail
+DOCKER_API_VERSION=1.39 act --verbose=false \
+  -W npu_e2e_test_a5.yml \
+  -j npu_e2e_tests \
+  -P self-hosted=a5-veomni-b060:v1 \
+  --env GITHUB_REF=refs/heads/ci/npu-ut-st-coverage \
+  --network host \
+  --pull=false \
+  2>&1 | tee pytest_st_total.log
+```
+
 ## Shared Test Infrastructure (`tests/tools/`)
 
 All shared, cross-cutting utilities live in `tests/tools/`:
