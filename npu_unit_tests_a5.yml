@@ -129,12 +129,18 @@ jobs:
           # uv sync --system-certs --frozen --python 3.12 --extra npu_aarch64 --group dev
           uv sync --locked --python 3.12 --extra npu_aarch64 --group dev --allow-insecure-host github.com --allow-insecure-host objects.githubusercontent.com --allow-insecure-host download-r2.pytorch.org
 
-      - name: Install torch_npu from local wheel
+      - name: Install torch_npu with pip
         run: |
-          uv pip install --python .venv/bin/python --no-deps --reinstall /app/torch_npu-*.whl
-      - name: Install triton-ascend from local wheel
+          uv pip install --python .venv/bin/python pip
+          .venv/bin/python -m pip install --no-deps --force-reinstall \
+            --index-url https://ascend.devcloud.huaweicloud.com/pypi/simple/ "torch-npu==2.10.0.post6"
+      - name: Install triton-ascend with pip
         run: |
-          uv pip install --python .venv/bin/python --no-deps --reinstall /app/triton_ascend-*.whl
+          # Install the base before the Ascend overlay, which replaces libtriton.so.
+          .venv/bin/python -m pip uninstall -y triton triton-ascend
+          .venv/bin/python -m pip install --no-deps "triton==3.5.0"
+          .venv/bin/python -m pip install --no-deps --force-reinstall \
+            "https://mirrors.huaweicloud.com/ascend/repos/pypi/triton-ascend/triton_ascend-3.2.2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl"
       - name: Install fla_npu from local wheel
         run: |
           uv pip install --python .venv/bin/python --no-deps --reinstall /app/flash_linear_attention_npu-*.whl

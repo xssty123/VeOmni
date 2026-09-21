@@ -1,0 +1,126 @@
+# A5 / ARM64, CANN 9.2.0-beta.2, Ubuntu 22.04 and shared Python 3.12.
+# torch-npu source: https://ascend.devcloud.huaweicloud.com/pypi/simple/torch-npu/
+# FLA source: https://github.com/flashserve/flash-linear-attention-npu/tree/v26.6.0
+# This Dockerfile has not yet been built or validated on A5.
+FROM swr.cn-south-1.myhuaweicloud.com/ascendhub/cann:9.2.0-beta.2-950-ubuntu22.04-py3.12
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+USER root
+
+ARG PIP_INDEX=https://pypi.org/simple
+ARG APT_SOURCE=http://ports.ubuntu.com/ubuntu-ports/
+
+ENV MAX_JOBS=16
+ENV PIP_ROOT_USER_ACTION=ignore
+ENV OMP_NUM_THREADS=4
+ENV OPENBLAS_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+
+RUN python -c "import platform, sys; assert platform.machine() == 'aarch64'; assert sys.version_info[:2] == (3, 12)" && \
+    test -f /usr/local/Ascend/ascend-toolkit/set_env.sh
+
+RUN echo "Setting timezone to CST (China Standard Time)..." && \
+    ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone
+
+# Preserve the ARM Ubuntu mirror override used by the A3 Dockerfile.
+RUN if [ "${APT_SOURCE}" != "http://ports.ubuntu.com/ubuntu-ports/" ]; then \
+    cp /etc/apt/sources.list /etc/apt/sources.list.bak && \
+    sed -E -i "s#https?://[^[:space:]]+/ubuntu-ports/?#${APT_SOURCE}#g" /etc/apt/sources.list; \
+    fi
+
+# gawk and pciutils are required by the supplied A5 FLA build procedure.
+# binutils provides readelf for check_packaged_wheel_api.py.
+RUN apt-get -o Acquire::Check-Date=false update -y && \
+    DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Check-Date=false install -y --no-install-recommends \
+        gcc g++ cmake libnuma-dev sudo wget git curl jq vim build-essential ssh ca-certificates ffmpeg pkg-config gawk pciutils binutils && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    pip install --upgrade pip setuptools packaging && \
+    pip cache purge
+
+RUN chmod +x /usr/bin/make /usr/bin/gmake /usr/bin/cc /usr/bin/c++
+
+RUN pip install --upgrade pip setuptools packaging --no-cache-dir --progress-bar off && \
+    pip cache purge
+
+RUN pip config set global.index-url "${PIP_INDEX}" && \
+    pip config set global.no-cache-dir "true" && \
+    pip config --user set global.progress_bar off && \
+    python -m pip install --upgrade pip
+
+RUN pip3 install --no-cache-dir -U pip setuptools requests
+
+# The A5 CI creates its own venv with uv after checking out VeOmni.
+COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /uvx /bin/
+
+WORKDIR /app
+COPY . .
+
+# Match the existing ARM installation path; pip does not install uv groups.
+RUN pip install -e ".[npu_aarch64]" "transformers==5.9.0" && \
+    python -c "import transformers; assert transformers.__version__ == '5.9.0'"
+
+# Preserve the ARM parquet workaround from the historical Dockerfile.
+RUN pip install "pyarrow==21.0.0" "pandas==2.3.2"
+
+# Keep the selected wheels in /app for reproducibility; A5 CI installs
+# torch-npu and triton-ascend online and reinstalls the local FLA wheel.
+# Discard stale copies inherited from a base image or the build context.
+RUN rm -f /app/torch_npu-*.whl /app/triton-*.whl /app/triton_ascend-*.whl /app/flash_linear_attention_npu-*.whl && \
+    python -m pip download --no-deps --only-binary=:all: --dest /app --index-url https://ascend.devcloud.huaweicloud.com/pypi/simple/ "torch-npu==2.10.0.post6" && \
+    python -m pip install --no-deps --force-reinstall /app/torch_npu-*.whl && \
+    python -m pip install pybind11 wheel ninja
+
+# The cp312/aarch64 3.2.2 wheel requires triton==3.5.0. Install the base first,
+# then the Ascend overlay so its patched libtriton.so wins. --no-deps preserves
+# VeOmni's scipy/decorator versions instead of applying the wheel's older pins.
+# CI must also restore triton==3.5.0 and pybind11 after its exact uv sync;
+# system site-packages are not inherited by the CI venv.
+RUN python -m pip uninstall -y triton triton-ascend && \
+    python -m pip download --no-deps --only-binary=:all: --dest /app "triton==3.5.0" && \
+    python -m pip install --no-deps /app/triton-3.5.0-*.whl && \
+    python -m pip download --no-deps --dest /app \
+        "https://mirrors.huaweicloud.com/ascend/repos/pypi/triton-ascend/triton_ascend-3.2.2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" && \
+    python -m pip install --no-deps --force-reinstall /app/triton_ascend-*.whl && \
+    source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
+    python -c "from triton._C.libtriton import ascend"
+
+# v26.6.0 is both a branch and a tag upstream. Pin the inspected branch commit,
+# which preserves automatic torch.ops.npu registration and embeds the A5 OPP.
+# Build against the final Python/Torch/torch_npu/CANN stack, not an A2/A3 wheel.
+# Keep source, build and checks in one shell so the CANN environment persists.
+RUN git clone --branch v26.6.0 https://github.com/flashserve/flash-linear-attention-npu /tmp/fla-npu && \
+    cd /tmp/fla-npu && git checkout --detach cf1947bff0e75522f9cc0bba5814e6705dc80aae && \
+    source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
+    python -m pip install -r requirements.txt && \
+    FLA_NPU_SOC=ascend950 python -m pip wheel --no-build-isolation --no-deps . -w dist && \
+    python -m pip uninstall -y fla-npu flash-linear-attention-npu && \
+    python -m pip install --force-reinstall --no-deps dist/flash_linear_attention_npu-*.whl && \
+    python -c "import fla_npu; import torch; present = hasattr(torch.ops.npu, 'npu_chunk_fwd_o'); print(present); assert present" && \
+    python scripts/check_packaged_wheel_api.py && \
+    python -c "from importlib.metadata import version; v = version('flash-linear-attention-npu'); print('flash-linear-attention-npu', v); assert v == '26.6.0'" && \
+    cp dist/flash_linear_attention_npu-*.whl /app/ && \
+    cd / && rm -rf /tmp/fla-npu
+
+# Preserve the ARM TorchCodec source and installer for rebuilding in CI's venv.
+RUN git clone https://github.com/meta-pytorch/torchcodec.git
+
+WORKDIR /app/torchcodec
+RUN git checkout v0.10.0
+
+ENV CANN_PATH=/usr/local/Ascend
+
+RUN cp ../docs/get_started/installation/install_torchcodec_Ascend.sh .
+RUN chmod +x install_torchcodec_Ascend.sh
+RUN bash install_torchcodec_Ascend.sh ${CANN_PATH}/ascend-toolkit/set_env.sh
+
+WORKDIR /app
+
+# Record the actual resolved Python packages alongside the retained artifacts.
+RUN python -c "from importlib.metadata import version; assert version('torch').split('+')[0] == '2.10.0'; assert version('torch-npu') == '2.10.0.post6'; assert version('triton-ascend') == '3.2.2'; assert version('transformers') == '5.9.0'" && \
+    python -m pip freeze > /app/a5-image-requirements.txt && \
+    sha256sum /app/torch_npu-*.whl /app/triton-*.whl /app/triton_ascend-*.whl /app/flash_linear_attention_npu-*.whl > /app/a5-ci-wheels.sha256
+
+CMD ["/bin/bash"]

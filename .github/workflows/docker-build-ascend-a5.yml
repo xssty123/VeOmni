@@ -1,0 +1,95 @@
+name: docker-build-ascend-a5
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  packages: write
+
+env:
+  IMAGE: ghcr.io/xssty123/veomni-a5
+
+jobs:
+  build-ascend-image-a5:
+    if: github.repository == 'xssty123/VeOmni'
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 360
+    concurrency:
+      group: ${{ github.workflow }}-${{ github.ref }}-build-ascend-image-a5
+      cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Check package visibility
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              const { data } = await github.rest.packages.getPackageForUser({
+                username: 'xssty123',
+                package_type: 'container',
+                package_name: 'veomni-a5',
+              });
+              if (data.visibility !== 'private') {
+                core.setFailed(`Expected a private package, found ${data.visibility}`);
+              }
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.info('No accessible existing package; new GHCR packages default to private.');
+            }
+
+      - name: Compute image tag
+        id: image
+        shell: bash
+        run: |
+          TAG="a5-cann9.2.0-beta.2-torch_npu2.10.0.post6-${GITHUB_SHA::12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "tag=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to private GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # The Dockerfile retains FLA wheels and TorchCodec sources under /app.
+      - name: Build and push A5 image
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          platforms: linux/arm64
+          file: ./docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post6_a5
+          push: true
+          tags: ${{ steps.image.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/xssty123/VeOmni
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: type=gha,scope=ascend-a5
+          cache-to: type=gha,scope=ascend-a5,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            PIP_INDEX=https://pypi.org/simple
+
+      - name: Record image reference
+        env:
+          IMAGE_TAG: ${{ steps.image.outputs.tag }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        shell: bash
+        run: |
+          {
+            echo '### A5 image'
+            printf 'Tag: `%s`\n\n' "$IMAGE_TAG"
+            printf 'Digest: `%s@%s`\n\n' "$IMAGE" "$IMAGE_DIGEST"
+            printf 'Pull: `docker pull %s@%s`\n' "$IMAGE" "$IMAGE_DIGEST"
+          } >> "$GITHUB_STEP_SUMMARY"

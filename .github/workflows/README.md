@@ -1,3 +1,26 @@
+### A5 Docker Build
+
+`docker-build-ascend-a5.yml` is a manual (`workflow_dispatch`) ARM64 build
+for `docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post6_a5`.
+It uses `ubuntu-22.04-arm` and a separate `ascend-a5` build cache. Once the
+workflow is available on the repository's default branch, select
+`docker-build-ascend-a5` in Actions and choose the branch to build.
+
+It runs only in `xssty123/VeOmni` and pushes successful builds to
+`ghcr.io/xssty123/veomni-a5` using `GITHUB_TOKEN` with `packages: write`.
+Each tag includes the commit, run ID and run attempt. The Actions summary records
+the tag and immutable digest for subsequent UT/ST. No Quay credentials are used.
+
+The workflow rejects an existing package whose visibility is not `private`.
+New GHCR packages default to private; package visibility is separate from the
+repository's visibility. Pulling the image outside Actions requires GHCR login
+with a token authorized to read the package (`read:packages`). An existing
+package must grant this repository Actions access for `GITHUB_TOKEN` to push.
+
+A successful build covers the checks inside the Dockerfile, including A5 FLA
+packaging, but does not establish NPU execution correctness. The existing A5
+UT/ST image selection is unchanged.
+
 ### Adding a New Workflow
 
 When adding a new workflow for continuous integration (CI), you have two runner options: a fixed runner or a machine from the vemlp.
