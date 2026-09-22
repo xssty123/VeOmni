@@ -132,14 +132,19 @@ jobs:
       - name: Install torch_npu with pip
         run: |
           uv pip install --python .venv/bin/python pip
+          # Temporary host-scoped TLS exceptions until the runner CA trust is configured.
           .venv/bin/python -m pip install --no-deps --force-reinstall \
-            --index-url https://ascend.devcloud.huaweicloud.com/pypi/simple/ "torch-npu==2.10.0.post6"
+            --index-url https://ascend.devcloud.huaweicloud.com/pypi/simple/ \
+            --trusted-host ascend.devcloud.huaweicloud.com "torch-npu==2.10.0.post6"
       - name: Install triton-ascend with pip
         run: |
           # Install the base before the Ascend overlay, which replaces libtriton.so.
           .venv/bin/python -m pip uninstall -y triton triton-ascend
-          .venv/bin/python -m pip install --no-deps "triton==3.5.0"
+          .venv/bin/python -m pip install --no-deps \
+            --index-url https://pypi.org/simple \
+            --trusted-host pypi.org --trusted-host files.pythonhosted.org "triton==3.5.0"
           .venv/bin/python -m pip install --no-deps --force-reinstall \
+            --trusted-host mirrors.huaweicloud.com \
             "https://mirrors.huaweicloud.com/ascend/repos/pypi/triton-ascend/triton_ascend-3.2.2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl"
       - name: Install fla_npu from local wheel
         run: |
@@ -153,7 +158,9 @@ jobs:
           uv pip install --python .venv/bin/python pip
           source .venv/bin/activate
           cd "${TORCHCODEC_SOURCE_DIR:-/app/torchcodec}"
-          PIP_INDEX_URL=https://pypi.org/simple bash install_torchcodec_Ascend.sh "$ASCEND_ENV"
+          PIP_INDEX_URL=https://pypi.org/simple \
+            PIP_TRUSTED_HOST="pypi.org files.pythonhosted.org" \
+            bash install_torchcodec_Ascend.sh "$ASCEND_ENV"
           # Exports in the installer subprocess do not persist in this shell.
           export LD_LIBRARY_PATH="/usr/local/lib:/usr/lib64:${LD_LIBRARY_PATH:-}"
           python -c "import torchcodec; from torchcodec.decoders import VideoDecoder; print(torchcodec.__file__); print('VideoDecoder import: Success')"
