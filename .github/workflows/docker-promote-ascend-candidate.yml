@@ -7,7 +7,7 @@ on:
         description: Ascend image series to promote
         required: true
         type: choice
-        options: [a2, a3]
+        options: [a2, a3, a5]
       expected_commit:
         description: Full source commit shared by every candidate
         required: true
@@ -17,7 +17,7 @@ on:
         required: false
         type: string
       arm64_run_id:
-        description: Successful a2-arm64 or a3-arm64 candidate run ID
+        description: Successful ARM64 candidate run ID, or A5 build run ID
         required: true
         type: string
       quay_tag:
@@ -54,7 +54,130 @@ env:
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
+  validate-a5:
+    name: Validate existing A5 image
+    if: inputs.target == 'a5'
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 90
+    outputs:
+      artifact_id: ${{ steps.artifact.outputs.artifact-id }}
+      artifact_name: a5-quay-source-${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Verify A5 source build
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ inputs.arm64_run_id }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$GITHUB_REPOSITORY" == "xssty123/VeOmni" ]]
+          [[ "$GITHUB_REF" == "refs/heads/main" ]]
+          [[ "$SOURCE_RUN_ID" =~ ^[0-9]+$ ]]
+          [[ "$EXPECTED_COMMIT" =~ ^[0-9a-f]{40}$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN_ID" > source-run.json
+          gh run view "$SOURCE_RUN_ID" --repo "$GITHUB_REPOSITORY" --log > source-run.log
+          python3 - <<'PYTHON'
+          import json, os, re
+          from pathlib import Path
+          r = json.loads(Path('source-run.json').read_text())
+          repo = os.environ['GITHUB_REPOSITORY']
+          assert r['id'] == int(os.environ['SOURCE_RUN_ID'])
+          assert r['repository']['full_name'] == repo
+          assert r['head_repository']['full_name'] == repo
+          assert r['path'] == '.github/workflows/docker-build-ascend-a5.yml'
+          assert r['event'] == 'workflow_dispatch'
+          assert r['status'] == 'completed' and r['conclusion'] == 'success'
+          assert r['head_sha'] == os.environ['EXPECTED_COMMIT']
+          assert r['run_attempt'] >= 1
+          log = Path('source-run.log').read_text()
+          digests = set(re.findall(r'\tRecord image reference\t[^\n]* IMAGE_DIGEST: (sha256:[a-f0-9]{64})\s*$', log, re.M))
+          tags = set(re.findall(r'\tRecord image reference\t[^\n]* IMAGE_TAG: (ghcr\.io/\S+)\s*$', log, re.M))
+          assert len(digests) == 1, digests
+          digest = digests.pop()
+          image = 'ghcr.io/xssty123/veomni-a5'
+          tag = f"a5-cann9.2.0-beta.2-torch_npu2.10.0.post6-{r['head_sha'][:12]}-{r['id']}-{r['run_attempt']}"
+          assert tags == {f'{image}:{tag}'}, tags
+          assert 'Packaged wheel API check passed.' in log
+          record = dict(commit=r['head_sha'], run_id=r['id'], run_attempt=r['run_attempt'],
+                        run_url=r['html_url'], workflow=r['path'], target='a5-arm64', platform='linux/arm64',
+                        dockerfile='docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post6_a5',
+                        image=image, tag=tag, digest=digest, build_result='success',
+                        validation_result='not-run', validation_kind='fresh-container-imports',
+                        hardware_tests='not-run-by-this-workflow')
+          Path('ascend-candidate-result.json').write_text(json.dumps(record, indent=2) + '\n')
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as f:
+              f.write(f'ref={image}@{digest}\n')
+          PYTHON
+
+      - name: Free hosted runner disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+
+      - name: Log in to GHCR
+        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check existing image without installing dependencies
+        env:
+          SOURCE_REF: ${{ steps.source.outputs.ref }}
+          EXPECTED_COMMIT: ${{ inputs.expected_commit }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker pull "$SOURCE_REF"
+          [[ "$(docker image inspect "$SOURCE_REF" --format '{{.Os}}/{{.Architecture}}')" == 'linux/arm64' ]]
+          [[ "$(docker image inspect "$SOURCE_REF" --format '{{index .Config.Labels "org.opencontainers.image.revision"}}')" == "$EXPECTED_COMMIT" ]]
+          docker run --rm -i --entrypoint /bin/bash "$SOURCE_REF" -c 'source /usr/local/Ascend/ascend-toolkit/set_env.sh && python -' <<'PYTHON'
+          import platform, sys
+          from importlib.metadata import version
+          from pathlib import Path
+          import torch, torch_npu, fla_npu
+          from triton._C.libtriton import ascend
+          from torchcodec.decoders import VideoDecoder
+          assert platform.machine() == 'aarch64'
+          assert sys.version_info[:2] == (3, 12)
+          for package, expected in [('torch', '2.10.0'), ('torch-npu', '2.10.0.post6'),
+                                    ('triton-ascend', '3.2.2'), ('flash-linear-attention-npu', '26.6.0'),
+                                    ('transformers', '5.9.0')]:
+              actual = version(package)
+              print(package, actual, flush=True)
+              assert actual.split('+')[0] == expected, (package, actual)
+          for name in ['npu_recompute_w_u_fwd', 'npu_chunk_gated_delta_rule_fwd_h',
+                       'npu_chunk_fwd_o', 'npu_chunk_bwd_dv_local', 'npu_chunk_gated_delta_rule_bwd_dhu',
+                       'npu_chunk_bwd_dqkwg', 'npu_prepare_wy_repr_bwd_da', 'npu_prepare_wy_repr_bwd_full']:
+              assert hasattr(torch.ops.npu, name), name
+          assert list(Path('/app').glob('flash_linear_attention_npu-*.whl'))
+          assert Path('/app/torchcodec/install_torchcodec_Ascend.sh').is_file()
+          print('Fresh A5 image import checks passed; no NPU computation was executed.', flush=True)
+          PYTHON
+          python3 - <<'PYTHON'
+          import json
+          from pathlib import Path
+          p = Path('ascend-candidate-result.json')
+          r = json.loads(p.read_text())
+          r['validation_result'] = 'success'
+          p.write_text(json.dumps(r, indent=2) + '\n')
+          PYTHON
+
+      - name: Upload A5 validation record
+        if: always()
+        id: artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: a5-quay-source-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ascend-candidate-result.json
+          if-no-files-found: error
+          retention-days: 90
+
   prepare:
+    needs: validate-a5
+    if: ${{ always() && (inputs.target != 'a5' || needs.validate-a5.result == 'success') }}
     name: Verify candidate records
     runs-on: ubuntu-latest
     outputs:
@@ -85,6 +208,8 @@ jobs:
           TAG_POLICY: ${{ inputs.tag_policy }}
           PROTECTION_CONFIRMATION: ${{ inputs.protection_confirmation }}
           CONFIRMATION: ${{ inputs.confirmation }}
+          A5_ARTIFACT_ID: ${{ needs.validate-a5.outputs.artifact_id }}
+          A5_ARTIFACT_NAME: ${{ needs.validate-a5.outputs.artifact_name }}
         run: |
           set -euo pipefail
 
@@ -95,8 +220,8 @@ jobs:
           [[ "$ARM64_RUN_ID" =~ ^[0-9]+$ ]] || { echo "arm64_run_id must be numeric" >&2; exit 1; }
           if [[ "$TARGET" == "a2" ]]; then
             [[ "$AMD64_RUN_ID" =~ ^[0-9]+$ ]] || { echo "amd64_run_id is required for A2" >&2; exit 1; }
-          elif [[ "$TARGET" == "a3" ]]; then
-            [[ -z "$AMD64_RUN_ID" ]] || { echo "amd64_run_id must be empty for A3" >&2; exit 1; }
+          elif [[ "$TARGET" == "a3" || "$TARGET" == "a5" ]]; then
+            [[ -z "$AMD64_RUN_ID" ]] || { echo "amd64_run_id must be empty for A3/A5" >&2; exit 1; }
           else
             echo "unsupported target: $TARGET" >&2
             exit 1
@@ -177,8 +302,36 @@ jobs:
             for output in amd64_ref amd64_digest amd64_artifact_id amd64_artifact_name amd64_run_attempt; do
               echo "$output=" >> "$GITHUB_OUTPUT"
             done
-            load_record arm64 "$ARM64_RUN_ID" a3-arm64 linux/arm64 \
-              docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_a3
+            if [[ "$TARGET" == "a5" ]]; then
+              [[ "$A5_ARTIFACT_ID" =~ ^[0-9]+$ ]]
+              [[ "$A5_ARTIFACT_NAME" == "a5-quay-source-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" ]]
+              artifact_json=$(gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$A5_ARTIFACT_ID")
+              jq -e --arg name "$A5_ARTIFACT_NAME" --argjson run "$GITHUB_RUN_ID" \
+                '.name == $name and .expired == false and .workflow_run.id == $run' <<< "$artifact_json" > /dev/null
+              record_dir="$RUNNER_TEMP/a5-record"
+              mkdir -p "$record_dir"
+              gh api "repos/$GITHUB_REPOSITORY/actions/artifacts/$A5_ARTIFACT_ID/zip" > "$record_dir/record.zip"
+              unzip -q "$record_dir/record.zip" -d "$record_dir/content"
+              record="$record_dir/content/ascend-candidate-result.json"
+              jq -e --arg commit "$EXPECTED_COMMIT" --argjson run "$ARM64_RUN_ID" \
+                '(.build_result == "success") and (.validation_result == "success") and
+                 (.validation_kind == "fresh-container-imports") and
+                 (.commit == $commit) and (.run_id == $run) and (.run_attempt >= 1) and
+                 (.workflow == ".github/workflows/docker-build-ascend-a5.yml") and
+                 (.target == "a5-arm64") and (.platform == "linux/arm64") and
+                 (.dockerfile == "docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post6_a5") and
+                 (.image == "ghcr.io/xssty123/veomni-a5") and
+                 (.digest | test("^sha256:[0-9a-f]{64}$"))' "$record" > /dev/null
+              digest=$(jq -r '.digest' "$record")
+              echo "arm64_ref=ghcr.io/xssty123/veomni-a5@$digest" >> "$GITHUB_OUTPUT"
+              echo "arm64_digest=$digest" >> "$GITHUB_OUTPUT"
+              echo "arm64_artifact_id=$A5_ARTIFACT_ID" >> "$GITHUB_OUTPUT"
+              echo "arm64_artifact_name=$A5_ARTIFACT_NAME" >> "$GITHUB_OUTPUT"
+              echo "arm64_run_attempt=$(jq -r '.run_attempt' "$record")" >> "$GITHUB_OUTPUT"
+            else
+              load_record arm64 "$ARM64_RUN_ID" a3-arm64 linux/arm64 \
+                docker/ascend/Dockerfile.ascend_9.1.0_torch_npu2.10.0.post2_a3
+            fi
           fi
 
           echo "target=$TARGET" >> "$GITHUB_OUTPUT"
