@@ -1,9 +1,14 @@
 """Manual packing parity check. Defaults to CPU; NPU requires --device npu:0."""
 
 import argparse
+import contextlib
 import importlib.util
+import io
+import json
 import math
+import os
 from pathlib import Path
+from unittest.mock import patch
 
 import torch
 
@@ -16,6 +21,65 @@ def load_entry():
     return module
 
 
+def check_diagnostic_boundaries(entry):
+    """Inject failures on CPU to verify attribution and fail-stop behavior."""
+    tensor = torch.arange(12, dtype=torch.float32)[2:10]
+    output = torch.empty(8)
+    real_pack = entry.eager_chunk_cat
+    for failure in (None, "pre_sync", "pack", "post_sync", "disabled"):
+        calls = []
+        error = RuntimeError(f"injected {failure}")
+
+        def synchronize(calls=calls, failure=failure, error=error):
+            stage = "pre_sync" if not calls else "post_sync"
+            calls.append(stage)
+            if failure == stage:
+                raise error
+
+        def pack(*args, calls=calls, failure=failure, error=error, **kwargs):
+            calls.append("pack")
+            if failure == "pack":
+                raise error
+            return real_pack(*args, **kwargs)
+
+        captured = io.StringIO()
+        with (
+            patch.dict(os.environ, VEOMNI_CHUNKCAT_SYNC="0" if failure == "disabled" else "1"),
+            patch.dict(os.environ, VEOMNI_CHUNKCAT_LOG_INPUTS="1"),
+            patch.object(entry, "_device_context", return_value=(synchronize, "mock-stream")) as context,
+            patch.object(entry, "eager_chunk_cat", side_effect=pack),
+            contextlib.redirect_stdout(captured),
+        ):
+            try:
+                entry.eager_reduce_scatter_copy_in([tensor], output, 2)
+            except RuntimeError as caught:
+                assert failure in ("pre_sync", "pack", "post_sync") and caught is error
+            else:
+                assert failure in (None, "disabled")
+                torch.testing.assert_close(output, tensor)
+            context.assert_called_once()
+        records = [json.loads(line.split(" ", 2)[2]) for line in captured.getvalue().splitlines()]
+        metadata = next(r for r in records if "inputs" in r)
+        assert metadata["inputs"][0]["data_ptr"] == tensor.data_ptr()
+        assert metadata["inputs"][0]["storage_offset"] == 2
+        assert metadata["stream"] == "mock-stream"
+        failed = [r for r in records if r["event"] == "failed"]
+        expected_calls = {
+            None: ["pre_sync", "pack", "post_sync"],
+            "pre_sync": ["pre_sync"],
+            "pack": ["pre_sync", "pack"],
+            "post_sync": ["pre_sync", "pack", "post_sync"],
+            "disabled": ["pack"],
+        }
+        assert calls == expected_calls[failure]
+        if failure in (None, "disabled"):
+            assert not failed
+        else:
+            assert len(failed) == 1 and failed[0]["stage"] == failure
+            assert records[-1] == failed[0]
+    print("PASS: CPU diagnostic attribution, fail-stop, metadata, and sync opt-out")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default="cpu")
@@ -24,6 +88,7 @@ def main():
         import torch_npu  # noqa: F401
 
     entry = load_entry()
+    check_diagnostic_boundaries(entry)
     from torch.distributed.fsdp._fully_shard import _fsdp_collectives
 
     original = entry.install_chunkcat_eager()

@@ -53,11 +53,37 @@ export NPROC_PER_NODE=8
 bash train.sh tasks/train_vlm_chunkcat_eager.py /absolute/path/to/training.yaml
 ```
 
-Look for `[chunkcat-eager] installed` on every rank and `begin` metadata from
-actual calls. `submitted` means the Python call returned, not that asynchronous
-device work completed. Disable per-call metadata by unsetting
-`VEOMNI_CHUNKCAT_LOG_INPUTS`; the first call and Python failures are still logged.
-Do not infer finite gradients from a printed step alone.
+Look for `[chunkcat-eager] installed` on every rank with `boundary_sync=1 schema=2`.
+The debug entry now defaults `VEOMNI_CHUNKCAT_SYNC` to `1`: device-wide NPU
+synchronization immediately before and after each packing call. This changes
+timing and overlap, so a passing run is diagnostic evidence, not a validated fix.
+Set `VEOMNI_CHUNKCAT_SYNC=0` explicitly to compare without these added barriers.
+The ordinary training entry is unaffected. No distributed barrier is added.
+
+Events contain a JSON record after the `[chunkcat-eager] EVENT` prefix, including
+rank, PID, call number, stage, and timestamp. Per-call metadata records include
+input/output shapes, strides, dtype, device, data pointers, storage offsets,
+logical byte sizes, and the current stream representation. Stream handles in
+Python must not be assumed to equal the device log's numeric stream IDs.
+Metadata is cached before packing; failures print only cached metadata and the
+exception, then re-raise without further device queries or synchronization.
+
+| Failure stage | Interpretation |
+| --- | --- |
+| `metadata` / `stream_context` | Diagnostic setup failed; packing has not started. |
+| `pre_sync` | Device work failed before this packing call was issued. |
+| `pack` | The eager decomposition raised after pre-sync succeeded. |
+| `post_sync` | Packing returned, but subsequent device synchronization failed. |
+
+Device synchronization covers all streams, so these boundaries localize error
+reporting, not necessarily the original corruption. Other submitted work and
+earlier undetected corruption are not ruled out by successful pre-sync.
+`submitted` alone does not establish device completion. With synchronization
+enabled, expect `complete` at `post_sync` before returning to FSDP. With it off,
+`VEOMNI_CHUNKCAT_LOG_INPUTS=1` keeps per-call metadata; otherwise only the first
+call and failures are logged. Do not infer finite gradients from a printed step.
+The CPU check also injects pre-sync, packing, and post-sync failures to verify
+stage attribution, original exception propagation, and no subsequent operations.
 
 Rollback: run `tasks/train_vlm.py` in a new process. Do not change AdamW foreach
 at the same time. Full logs, device dumps, datasets, model weights, host paths,
