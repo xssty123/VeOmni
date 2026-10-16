@@ -37,7 +37,7 @@ python scripts/debug/check_chunkcat_eager.py --device cpu
 python scripts/debug/check_chunkcat_eager.py --device npu:0
 ```
 
-The check compares 144 cases with native CPU ChunkCat, covering padding,
+The check compares 144 cases per packing mode (288 total) with native CPU ChunkCat, covering padding,
 noncontiguous inputs, mixed tensor ranks, BF16/FP32 output, and world sizes 1/2/4/8.
 It is a manual diagnostic, not an automatically wired CI test.
 
@@ -53,7 +53,8 @@ export NPROC_PER_NODE=8
 bash train.sh tasks/train_vlm_chunkcat_eager.py /absolute/path/to/training.yaml
 ```
 
-Look for `[chunkcat-eager] installed` on every rank with `boundary_sync=1 schema=2`.
+Look for `[chunkcat-eager] installed` on every rank with `boundary_sync=1 schema=3`
+and the selected `packing_mode`.
 The debug entry now defaults `VEOMNI_CHUNKCAT_SYNC` to `1`: device-wide NPU
 synchronization immediately before and after each packing call. This changes
 timing and overlap, so a passing run is diagnostic evidence, not a validated fix.
@@ -84,6 +85,35 @@ enabled, expect `complete` at `post_sync` before returning to FSDP. With it off,
 call and failures are logged. Do not infer finite gradients from a printed step.
 The CPU check also injects pre-sync, packing, and post-sync failures to verify
 stage attribution, original exception propagation, and no subsequent operations.
+
+### Split packing inside training
+
+Set `VEOMNI_CHUNKCAT_MODE=precast` for the next training diagnostic, keeping
+`VEOMNI_CHUNKCAT_SYNC=1`. The entry still uses the real FSDP gradients, output
+buffer, and current stream, but splits the work into synchronized stages:
+
+1. `pad_and_reshape`: PyTorch 2.10 `_pad_chunk` on the entire tensor list.
+2. `cast_tensor_0`, `cast_tensor_1`, etc.: convert each packed tensor to the output
+   dtype (FP32 in the failing training run), recording the zero-based index and
+   converted buffer metadata. Same-dtype tensors may alias instead of copying.
+3. `same_dtype_cat`: concatenate those tensors into the original output buffer.
+
+Each operation logs `begin`, `submitted`, then `complete` after synchronization.
+A failure before `submitted` occurred in the operation; a failure after it but
+before `complete` occurred at its synchronization. Cached failure metadata
+includes packed inputs and all conversions that completed before the failure.
+CPU checks inject failures in padding, both example casts, concatenation, and
+a cast's synchronization; each failure must stop subsequent phases.
+
+This removes the implicit mixed-dtype conversion inside `cat`, so it is a
+diagnostic comparison, not an identical kernel sequence. Converted tensors are
+retained until concatenation: the observed 15-input group needs approximately
+3.35 GB of additional FP32 storage, plus any padding intermediates. The changed
+allocation and synchronization can affect reproduction. Do not interpret an OOM
+in this mode as the original Cast fault, or a pass as proof of a root-cause fix.
+The entry defaults to `eager`; set `VEOMNI_CHUNKCAT_MODE=eager` to restore the
+previous packing path while retaining boundary diagnostics. The server's
+experiment launcher may explicitly select `precast`; inspect its effective log.
 
 Rollback: run `tasks/train_vlm.py` in a new process. Do not change AdamW foreach
 at the same time. Full logs, device dumps, datasets, model weights, host paths,
