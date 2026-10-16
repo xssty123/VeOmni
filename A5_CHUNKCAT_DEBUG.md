@@ -62,3 +62,67 @@ Do not infer finite gradients from a printed step alone.
 Rollback: run `tasks/train_vlm.py` in a new process. Do not change AdamW foreach
 at the same time. Full logs, device dumps, datasets, model weights, host paths,
 and credentials remain outside this public fork.
+
+## Standalone Cast / packing reproduction
+
+The first eager SFT attempt reached step 1 with finite logged gradient norm, then
+failed at packing call 545. All ranks reached the decomposition's `torch.cat`;
+device logs reported a Cast kernel instead of the earlier ChunkCat kernel.
+`scripts/debug/reproduce_a5_cast.py` captures the 15 input shapes and strides,
+BF16 inputs, FP32 output shape `(8, 104532544)`, and eight packing chunks.
+This is a single-device test: eight chunks do not require eight NPUs or HCCL.
+
+The largest input has 536870912 elements (2 GiB after FP32 conversion). The
+observed failure does not establish a size-limit bug: matching metadata had
+already appeared repeatedly earlier in training. Synthetic per-tensor constants
+are used here, not captured gradient values, addresses, or training stream state.
+A standalone pass cannot rule out a training-context problem.
+
+From the existing checkout, inside the prepared container, run manually:
+
+```bash
+# Default: npu:0, real shapes, 100 repetitions, reused input/output buffers.
+bash scripts/debug/run_a5_cast_repro.sh eager
+
+# Run these as separate experiments after inspecting any failure:
+bash scripts/debug/run_a5_cast_repro.sh cast
+bash scripts/debug/run_a5_cast_repro.sh precast-cat
+bash scripts/debug/run_a5_cast_repro.sh mixed-cat
+
+# Allocation comparison; the allocator may return previously used addresses.
+bash scripts/debug/run_a5_cast_repro.sh eager --allocation fresh
+
+# Isolate the largest tensor's conversion (index 7, zero based).
+bash scripts/debug/run_a5_cast_repro.sh cast --tensor-index 7
+```
+
+| Mode | Operations |
+| --- | --- |
+| `eager` | Call the same PyTorch decomposition used by the debug training entry. |
+| `cast` | Pad/reshape, then convert each BF16 tensor to FP32 separately. |
+| `precast-cat` | Pad/reshape, convert each tensor explicitly, then concatenate FP32 tensors into FP32 output. |
+| `mixed-cat` | Pad/reshape, then concatenate BF16 tensors directly into FP32 output. |
+
+All paths synchronize after each named phase and check deterministic samples,
+including padding. `mixed-cat` adds a synchronization boundary after padding,
+while `eager` preserves the decomposition as one Python call. Cast mode releases
+each converted tensor after checking; precast-cat keeps all converted inputs
+until concatenation. These allocation differences are intentional and logged.
+The tests use the default stream and synthetic data; they are not full training
+equivalence or performance tests. Real cases need several GiB of device memory.
+
+The launcher creates a unique directory under `../diagnostics/` containing full
+stdout/stderr, exit codes, JSONL phase events, commit/diff, and script snapshots.
+`begin` without `complete`, or a `failed` event, identifies the phase to inspect;
+`complete` is emitted only after synchronization. `all` runs each mode in a fresh
+process and stops on the first failure. No package installation or training is
+performed. Choose another device with `REPRO_DEVICE=npu:1`; existing visibility
+settings still apply. The launcher sets `ASCEND_LAUNCH_BLOCKING=1` and defaults
+`MULTI_STREAM_MEMORY_REUSE` to 2, recording their effective values.
+
+CPU plumbing checks (small shapes only, not A5 validation):
+
+```bash
+REPRO_DEVICE=cpu bash scripts/debug/run_a5_cast_repro.sh all --size tiny --iterations 2
+REPRO_DEVICE=cpu bash scripts/debug/run_a5_cast_repro.sh all --size tiny --iterations 2 --allocation fresh
+```
