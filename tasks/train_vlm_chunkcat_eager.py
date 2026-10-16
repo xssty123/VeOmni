@@ -15,15 +15,19 @@ _call_count = 0
 
 def _packing_mode():
     mode = os.environ.get("VEOMNI_CHUNKCAT_MODE", "eager")
-    if mode not in ("eager", "precast"):
-        raise ValueError("VEOMNI_CHUNKCAT_MODE must be eager or precast")
-    if mode == "precast" and os.environ.get("VEOMNI_CHUNKCAT_SYNC", "1") != "1":
-        raise ValueError("precast diagnosis requires VEOMNI_CHUNKCAT_SYNC=1")
+    if mode not in ("eager", "precast", "rowcopy"):
+        raise ValueError("VEOMNI_CHUNKCAT_MODE must be eager, precast, or rowcopy")
+    if mode in ("precast", "rowcopy") and os.environ.get("VEOMNI_CHUNKCAT_SYNC", "1") != "1":
+        raise ValueError(f"{mode} diagnosis requires VEOMNI_CHUNKCAT_SYNC=1")
     return mode
 
 
 def _cast_tensor(tensor, dtype):
     return tensor.to(dtype=dtype)
+
+
+def _copy_row(destination, source):
+    destination.copy_(source)
 
 
 def _tensor_metadata(tensor):
@@ -97,7 +101,7 @@ def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_si
             report("begin")
             synchronize()
             report("complete")
-        if mode == "precast":
+        if mode in ("precast", "rowcopy"):
             packed = run_phase("pad_and_reshape", _pad_chunk, unsharded_grads, dim=0, num_chunks=world_size)
             snapshot["packed_inputs"] = [_tensor_metadata(t) for t in packed]
             snapshot["converted"] = []
@@ -110,7 +114,36 @@ def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_si
                 snapshot["converted"].append(_tensor_metadata(value))
                 report("buffers", tensor_index=index, converted=snapshot["converted"][-1])
             snapshot.pop("tensor_index", None)
-            run_phase("same_dtype_cat", torch.cat, converted, dim=1, out=out)
+            if mode == "precast":
+                run_phase("same_dtype_cat", torch.cat, converted, dim=1, out=out)
+            else:
+                stage = "validate_copy_layout"
+                if not out.is_contiguous() or any(
+                    t.ndim != 2 or t.shape[0] != world_size or not t.is_contiguous() for t in converted
+                ):
+                    raise ValueError("rowcopy requires contiguous packed tensors and output")
+                if sum(t.shape[1] for t in converted) != out.shape[1]:
+                    raise ValueError("Packed widths do not cover the FSDP output")
+                offset = 0
+                for index, tensor in enumerate(converted):
+                    width = tensor.shape[1]
+                    for row in range(world_size):
+                        stage = f"copy_tensor_{index}_row_{row}"
+                        source = tensor[row]
+                        destination = out[row, offset : offset + width]
+                        snapshot["copy"] = {
+                            "tensor_index": index,
+                            "row": row,
+                            "column_start": offset,
+                            "column_end": offset + width,
+                            "source": _tensor_metadata(source),
+                            "destination": _tensor_metadata(destination),
+                        }
+                        report("buffers", **snapshot["copy"])
+                        run_phase(stage, _copy_row, destination, source)
+                    offset += width
+                snapshot.pop("copy", None)
+                del source, destination
             del tensor, value, converted, packed
         else:
             stage = "pack"
@@ -149,7 +182,7 @@ def install_chunkcat_eager():
     print(
         f"[chunkcat-eager] installed rank={os.environ.get('RANK', '?')} torch={torch.__version__} "
         f"packing_mode={mode} "
-        f"boundary_sync={os.environ.get('VEOMNI_CHUNKCAT_SYNC', '1')} schema=3",
+        f"boundary_sync={os.environ.get('VEOMNI_CHUNKCAT_SYNC', '1')} schema=4",
         flush=True,
     )
     return original

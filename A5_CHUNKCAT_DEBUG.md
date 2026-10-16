@@ -37,7 +37,7 @@ python scripts/debug/check_chunkcat_eager.py --device cpu
 python scripts/debug/check_chunkcat_eager.py --device npu:0
 ```
 
-The check compares 144 cases per packing mode (288 total) with native CPU ChunkCat, covering padding,
+The check compares 144 cases per packing mode (432 total) with native CPU ChunkCat, covering padding,
 noncontiguous inputs, mixed tensor ranks, BF16/FP32 output, and world sizes 1/2/4/8.
 It is a manual diagnostic, not an automatically wired CI test.
 
@@ -53,7 +53,7 @@ export NPROC_PER_NODE=8
 bash train.sh tasks/train_vlm_chunkcat_eager.py /absolute/path/to/training.yaml
 ```
 
-Look for `[chunkcat-eager] installed` on every rank with `boundary_sync=1 schema=3`
+Look for `[chunkcat-eager] installed` on every rank with `boundary_sync=1 schema=4`
 and the selected `packing_mode`.
 The debug entry now defaults `VEOMNI_CHUNKCAT_SYNC` to `1`: device-wide NPU
 synchronization immediately before and after each packing call. This changes
@@ -114,6 +114,35 @@ in this mode as the original Cast fault, or a pass as proof of a root-cause fix.
 The entry defaults to `eager`; set `VEOMNI_CHUNKCAT_MODE=eager` to restore the
 previous packing path while retaining boundary diagnostics. The server's
 experiment launcher may explicitly select `precast`; inspect its effective log.
+
+### Row-copy comparison after same-dtype concat failure
+
+The precast training run reached call 545 on all eight ranks: all 15 casts and
+synchronizations completed, then `same_dtype_cat` failed. Device logs identified
+ConcatD. This localizes the failure boundary, not the underlying cause.
+
+Set `VEOMNI_CHUNKCAT_MODE=rowcopy` with `VEOMNI_CHUNKCAT_SYNC=1` to retain the
+padding, all converted tensors, and the original FSDP output buffer, but replace
+`torch.cat` with sequential row copies. Each converted tensor has shape
+`(world_size, width)`. For each tensor and row, copy into that output row's
+corresponding column interval. Both source and destination slices are contiguous;
+no new full-size output is allocated. This preserves rank-major packing and the
+output buffer identity. The 15-tensor, eight-row group performs 120 copies.
+
+Stages `copy_tensor_I_row_R` log source/destination shape, stride, dtype, address,
+storage offset, byte size, and destination column bounds before copying. Each
+copy has its own device synchronization. On failure, the cached `copy` field
+identifies the active interval; no further device work is attempted. Layout
+validation rejects incompatible dimensions/widths or noncontiguous buffers.
+The entry logs `schema=4`. The experiment launcher may select `rowcopy` by default;
+check `packing_mode` in the installed message and saved runtime environment.
+
+This changes kernel selection, transfer sizes, timing, and synchronization count.
+A pass supports a usable diagnostic alternative, not proof of a ConcatD bug or
+absence of prior memory corruption. Retained FP32 temporary storage is unchanged
+from precast (about 3.35 GB for the failing group). Performance is not evaluated.
+CPU checks forbid cat in rowcopy, compare exact rank-major values, check output
+guards with a nonzero storage offset, and inject early/late copy and sync failures.
 
 Rollback: run `tasks/train_vlm.py` in a new process. Do not change AdamW foreach
 at the same time. Full logs, device dumps, datasets, model weights, host paths,

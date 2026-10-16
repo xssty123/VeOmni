@@ -135,6 +135,67 @@ def check_precast_boundaries(entry):
     print("PASS: CPU split-phase parity and operation/synchronization failure attribution")
 
 
+def check_rowcopy_boundaries(entry):
+    """Verify rank-major placement, offset output guards, and copy fail-stop behavior."""
+    inputs = [torch.arange(5, dtype=torch.bfloat16), torch.arange(3, dtype=torch.bfloat16) + 20]
+    expected = torch.empty((2, 5), dtype=torch.float32)
+    torch._chunk_cat(inputs, 0, 2, out=expected)
+    copy_stages = [f"copy_tensor_{index}_row_{row}" for index in range(2) for row in range(2)]
+    for failure in (None, copy_stages[0], copy_stages[-1], "sync:" + copy_stages[1]):
+        backing = torch.full((14,), -999.0)
+        output = backing[2:12]
+        captured = io.StringIO()
+        error = RuntimeError(f"injected {failure}")
+        copies = []
+
+        def current_stage(captured=captured):
+            return json.loads(captured.getvalue().splitlines()[-1].split(" ", 2)[2])["stage"]
+
+        def synchronize(failure=failure, error=error):
+            if failure == "sync:" + current_stage():
+                raise error
+
+        def copy(destination, source, failure=failure, error=error, copies=copies):
+            copies.append(current_stage())
+            assert destination.is_contiguous() and source.is_contiguous()
+            assert destination.dtype == source.dtype == torch.float32
+            if current_stage() == failure:
+                raise error
+            destination.copy_(source)
+
+        with (
+            patch.dict(os.environ, VEOMNI_CHUNKCAT_MODE="rowcopy", VEOMNI_CHUNKCAT_SYNC="1"),
+            patch.object(entry, "_device_context", return_value=(synchronize, "mock-stream")),
+            patch.object(entry, "_copy_row", side_effect=copy),
+            patch.object(torch, "cat", side_effect=AssertionError("rowcopy must not call cat")),
+            contextlib.redirect_stdout(captured),
+        ):
+            try:
+                assert entry.eager_reduce_scatter_copy_in(inputs, output, 2) is None
+            except RuntimeError as caught:
+                assert failure is not None and caught is error
+            else:
+                assert failure is None
+                torch.testing.assert_close(output.view_as(expected), expected, rtol=0, atol=0)
+        assert backing[:2].tolist() == [-999.0] * 2 and backing[12:].tolist() == [-999.0] * 2
+        records = [json.loads(line.split(" ", 2)[2]) for line in captured.getvalue().splitlines()]
+        if failure is None:
+            assert copies == copy_stages
+            assert records[-1]["stage"] == "post_sync" and records[-1]["event"] == "complete"
+        else:
+            stage = failure.removeprefix("sync:")
+            assert copies == copy_stages[: copy_stages.index(stage) + 1]
+            assert records[-1]["stage"] == stage and records[-1]["event"] == "failed"
+            metadata = records[-1]["copy"]
+            index, row = metadata["tensor_index"], metadata["row"]
+            column = 0 if index == 0 else 3
+            assert metadata["column_start"] == column
+            assert metadata["destination"]["storage_offset"] == 2 + row * 5 + column
+            assert metadata["destination"]["data_ptr"] == output.data_ptr() + (row * 5 + column) * 4
+            assert metadata["source"]["dtype"] == metadata["destination"]["dtype"] == "torch.float32"
+    print("PASS: CPU rowcopy placement, output guards, metadata, and operation/synchronization failure attribution")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default="cpu")
@@ -145,6 +206,7 @@ def main():
     entry = load_entry()
     check_diagnostic_boundaries(entry)
     check_precast_boundaries(entry)
+    check_rowcopy_boundaries(entry)
     from torch.distributed.fsdp._fully_shard import _fsdp_collectives
 
     original = entry.install_chunkcat_eager()
@@ -184,7 +246,7 @@ def main():
                             torch.stack((x, x), dim=-1).to(args.device)[..., 0] if noncontiguous else x.to(args.device)
                             for x in inputs
                         ]
-                        for mode in ("eager", "precast"):
+                        for mode in ("eager", "precast", "rowcopy"):
                             actual.fill_(float("nan"))
                             with patch.dict(os.environ, VEOMNI_CHUNKCAT_MODE=mode, VEOMNI_CHUNKCAT_SYNC="1"):
                                 result = _fsdp_collectives.foreach_reduce_scatter_copy_in(
