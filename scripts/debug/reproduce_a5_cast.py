@@ -145,7 +145,7 @@ def main():
                 torch.testing.assert_close(values, torch.tensor(expected, dtype=torch.float32), rtol=0, atol=0)
 
             def pad_inputs(inputs):
-                return [_pad_chunk(t, 0, chunks) for t in inputs]
+                return _pad_chunk(inputs, dim=0, num_chunks=chunks)
 
             def verify_output(out):
                 offset = 0
