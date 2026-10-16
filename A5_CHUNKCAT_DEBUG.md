@@ -37,7 +37,7 @@ python scripts/debug/check_chunkcat_eager.py --device cpu
 python scripts/debug/check_chunkcat_eager.py --device npu:0
 ```
 
-The check compares 144 cases per packing mode (432 total) with native CPU ChunkCat, covering padding,
+The check exercises 144 cases per packing mode (432 total) with native CPU ChunkCat, covering padding,
 noncontiguous inputs, mixed tensor ranks, BF16/FP32 output, and world sizes 1/2/4/8.
 It is a manual diagnostic, not an automatically wired CI test.
 
@@ -141,6 +141,9 @@ This changes kernel selection, transfer sizes, timing, and synchronization count
 A pass supports a usable diagnostic alternative, not proof of a ConcatD bug or
 absence of prior memory corruption. Retained FP32 temporary storage is unchanged
 from precast (about 3.35 GB for the failing group). Performance is not evaluated.
+Same-dtype conversions can retain noncontiguous input layouts; those rowcopy
+cases are expected to fail layout validation before any output writes. The check
+reports successful parity cases and rejected-layout cases separately.
 CPU checks forbid cat in rowcopy, compare exact rank-major values, check output
 guards with a nonzero storage offset, and inject early/late copy and sync failures.
 

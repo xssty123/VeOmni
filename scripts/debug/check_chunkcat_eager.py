@@ -220,6 +220,7 @@ def main():
         [(5,), (3, 2), (2, 3, 4)],
     ]
     checked = 0
+    rejected_layouts = 0
     try:
         for shapes in cases:
             for noncontiguous in (False, True):
@@ -249,9 +250,18 @@ def main():
                         for mode in ("eager", "precast", "rowcopy"):
                             actual.fill_(float("nan"))
                             with patch.dict(os.environ, VEOMNI_CHUNKCAT_MODE=mode, VEOMNI_CHUNKCAT_SYNC="1"):
-                                result = _fsdp_collectives.foreach_reduce_scatter_copy_in(
-                                    device_inputs, actual, chunks
-                                )
+                                try:
+                                    result = _fsdp_collectives.foreach_reduce_scatter_copy_in(
+                                        device_inputs, actual, chunks
+                                    )
+                                except ValueError as error:
+                                    assert mode == "rowcopy" and noncontiguous and input_dtype == output_dtype
+                                    assert str(error) == "rowcopy requires contiguous packed tensors and output"
+                                    packed = entry._pad_chunk(inputs, dim=0, num_chunks=chunks)
+                                    assert any(not t.is_contiguous() for t in packed)
+                                    assert torch.isnan(actual.cpu()).all()
+                                    rejected_layouts += 1
+                                    continue
                             assert result is None
                             assert actual.data_ptr() == ptr
                             assert actual.dtype == output_dtype
@@ -261,6 +271,7 @@ def main():
     finally:
         _fsdp_collectives.foreach_reduce_scatter_copy_in = original
     print(f"PASS: {checked} packing cases on {args.device}; exact values, dtype, buffer identity, and None return")
+    print(f"PASS: {rejected_layouts} noncontiguous same-dtype rowcopy cases rejected before output writes")
 
 
 if __name__ == "__main__":
