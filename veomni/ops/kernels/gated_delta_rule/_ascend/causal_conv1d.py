@@ -34,8 +34,8 @@ class CausalConv1dFunction(torch.autograd.Function):
         cu_seqlens: Optional[torch.Tensor] = None,
         output_final_state: bool = False,
     ):
-        if is_arch35():
-            raise NotImplementedError("causal_conv1d is not supported on arch35")
+        # if is_arch35():
+        #     raise NotImplementedError("causal_conv1d is not supported on arch35")
 
         y, final_state = causal_conv1d_fwd_impl(
             x=x,
@@ -67,8 +67,8 @@ class CausalConv1dFunction(torch.autograd.Function):
 
     @staticmethod
     def backward(ctx, dy: torch.Tensor, d_final_state: Optional[torch.Tensor] = None):
-        if is_arch35():
-            raise NotImplementedError("causal_conv1d is not supported on arch35")
+        # if is_arch35():
+        #     raise NotImplementedError("causal_conv1d is not supported on arch35")
 
         x, weight, bias, residual, initial_state, cu_seqlens = ctx.saved_tensors
 
