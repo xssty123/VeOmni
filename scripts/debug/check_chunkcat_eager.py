@@ -21,6 +21,57 @@ def load_entry():
     return module
 
 
+def check_allocation_metadata(entry):
+    """Observe the actual caller and storage without invoking its allocator."""
+    backing = torch.zeros(14)
+    output = backing[2:12]
+    storage = entry._storage_metadata(output)
+    assert storage["base_ptr"] == backing.data_ptr()
+    assert storage["tensor_ptr"] == backing.data_ptr() + 8
+    assert storage["nbytes"] == 56 and storage["logical_end_ptr"] == backing.data_ptr() + 48
+    assert storage["within_storage"] is True
+    strided = entry._storage_metadata(backing[::2])
+    assert not strided["contiguous"] and strided["within_storage"] is None
+    assert strided["logical_end_ptr"] is None
+
+    class Communication:
+        def __init__(self):
+            self._use_mem_cache = True
+            self._mem_cache_flag = False
+
+        def allocate(self, *args, **kwargs):
+            raise AssertionError("observation must never invoke the allocator")
+
+    def foreach_reduce(reduce_scatter_input, reduce_scatter_comm):
+        entry.eager_reduce_scatter_copy_in([torch.arange(10)], reduce_scatter_input, 2)
+
+    captured = io.StringIO()
+    with (
+        patch.dict(os.environ, VEOMNI_CHUNKCAT_MODE="rowcopy_fresh", VEOMNI_CHUNKCAT_SYNC="1"),
+        patch.dict(os.environ, VEOMNI_CHUNKCAT_PROBE_CALL="545"),
+        patch.object(entry, "_call_count", 544),
+        contextlib.redirect_stdout(captured),
+    ):
+        foreach_reduce(output, Communication())
+    records = [json.loads(line.split(" ", 2)[2]) for line in captured.getvalue().splitlines()]
+    context = next(r for r in records if r["event"] == "allocation_context")
+    assert context["available"] and context["comm_type"].endswith(".Communication")
+    assert context["allocate_qualname"].endswith(".Communication.allocate")
+    assert context["allocate_module"] == __name__
+    assert context["allocate_file"] == __file__
+    assert context["allocate_line"] == Communication.allocate.__code__.co_firstlineno
+    assert context["use_mem_cache"] is True and context["mem_cache_flag"] is False
+    assert context["out_storage"] == storage
+    fresh = next(r["fresh_storage"] for r in records if "fresh_storage" in r)
+    assert fresh["within_storage"] and fresh["base_ptr"] != storage["base_ptr"]
+    torch.testing.assert_close(output, torch.arange(10, dtype=output.dtype))
+    assert (backing[:2] == 0).all() and (backing[12:] == 0).all()
+    assert entry._allocation_context(output)["available"] is False
+    with patch.object(entry.inspect, "currentframe", return_value=None):
+        assert entry._allocation_context(output)["reason"] == "no_caller_frame"
+    print("PASS: CPU allocator provenance, observation-only behavior, storage bounds, and missing caller")
+
+
 def check_diagnostic_boundaries(entry):
     """Inject failures on CPU to verify attribution and fail-stop behavior."""
     tensor = torch.arange(12, dtype=torch.float32)[2:10]
@@ -278,6 +329,11 @@ def check_fresh_output_boundaries(entry):
                 assert records[-1]["copy"]["target"] == "original"
         metadata = next(r for r in records if "inputs" in r)
         assert metadata["probe_call"] == 545 and metadata["probe_active"]
+        assert metadata["allocation_context"]["reason"] == "not_direct_fsdp_caller"
+        assert metadata["out_storage"]["within_storage"]
+        if failure is not None:
+            assert records[-1]["out_storage"] == metadata["out_storage"]
+            assert records[-1]["allocation_context"] == metadata["allocation_context"]
 
     for call_id in (544, 546):
         captured = io.StringIO()
@@ -316,6 +372,7 @@ def main():
         import torch_npu  # noqa: F401
 
     entry = load_entry()
+    check_allocation_metadata(entry)
     check_diagnostic_boundaries(entry)
     check_precast_boundaries(entry)
     check_rowcopy_boundaries(entry)

@@ -37,7 +37,7 @@ python scripts/debug/check_chunkcat_eager.py --device cpu
 python scripts/debug/check_chunkcat_eager.py --device npu:0
 ```
 
-The check exercises 144 cases per packing mode (432 total) with native CPU ChunkCat, covering padding,
+The check exercises 144 cases per packing mode (576 total, including expected layout rejections) with native CPU ChunkCat, covering padding,
 noncontiguous inputs, mixed tensor ranks, BF16/FP32 output, and world sizes 1/2/4/8.
 It is a manual diagnostic, not an automatically wired CI test.
 
@@ -53,8 +53,8 @@ export NPROC_PER_NODE=8
 bash train.sh tasks/train_vlm_chunkcat_eager.py /absolute/path/to/training.yaml
 ```
 
-Look for `[chunkcat-eager] installed` on every rank with `boundary_sync=1 schema=4`
-and the selected `packing_mode`.
+Look for `[chunkcat-eager] installed` on every rank with `boundary_sync=1`
+and the selected `packing_mode` (`schema=6` in this revision).
 The debug entry now defaults `VEOMNI_CHUNKCAT_SYNC` to `1`: device-wide NPU
 synchronization immediately before and after each packing call. This changes
 timing and overlap, so a passing run is diagnostic evidence, not a validated fix.
@@ -134,7 +134,7 @@ storage offset, byte size, and destination column bounds before copying. Each
 copy has its own device synchronization. On failure, the cached `copy` field
 identifies the active interval; no further device work is attempted. Layout
 validation rejects incompatible dimensions/widths or noncontiguous buffers.
-The entry logs `schema=5`. The experiment launcher may select `rowcopy` by default;
+The entry logs `schema=6`. The experiment launcher may select `rowcopy` by default;
 check `packing_mode` in the installed message and saved runtime environment.
 
 This changes kernel selection, transfer sizes, timing, and synchronization count.
@@ -186,6 +186,32 @@ number is not a model-layer identity and can change if the workload changes.
 CPU checks cover selected/nonselected calls, identical source pointers and copy
 sizes across both passes, output guards, precise values, and injected allocation,
 copy, and synchronization failures. They do not validate A5 memory behavior.
+
+### Allocation provenance at the selected call
+
+Schema 6 adds observation only to the selected `rowcopy_fresh` call. The
+`allocation_context` event inspects the direct `foreach_reduce` caller and checks
+that its `reduce_scatter_input` is the same object. It records the actual
+communication class, the bound `allocate` implementation's module, qualified
+name, source file and line, and boolean instance flags `_use_mem_cache` and
+`_mem_cache_flag`. Missing flags are null; an unrecognized caller is reported
+as unavailable. No allocator method is invoked or replaced by this observation.
+
+These flags are sampled **after allocation**, at copy-in. In particular, a true
+`_mem_cache_flag` alone does not prove which branch served this allocation.
+Use the recorded implementation and its current source to interpret the flags;
+the presence of a torch_npu patch on disk does not prove that it was activated.
+
+`out_storage` and `fresh_storage` record storage base address, byte capacity,
+tensor address, contiguous logical end, and whether that interval fits inside
+the storage. Noncontiguous bounds are left unknown. These are PyTorch-visible
+metadata and device virtual addresses, not proof of valid physical backing,
+allocation lifetime, or absence of earlier corruption. Snapshots are captured
+before copies and reused in failure reports without additional device queries.
+Copy order, temporary allocations, synchronization, and the FSDP output remain
+unchanged from the preceding fresh-output experiment. CPU checks cover allocator
+provenance without calling it, offset views, noncontiguous bounds, missing caller
+fallback, and preservation of cached metadata on injected failures.
 
 Rollback: run `tasks/train_vlm.py` in a new process. Do not change AdamW foreach
 at the same time. Full logs, device dumps, datasets, model weights, host paths,

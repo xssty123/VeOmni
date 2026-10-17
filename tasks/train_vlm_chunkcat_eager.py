@@ -59,6 +59,56 @@ def _device_context(device):
     return lambda: torch.npu.synchronize(device), stream
 
 
+def _storage_metadata(tensor):
+    """Describe storage bounds without reading tensor contents or allocating device memory."""
+    storage = tensor.untyped_storage()
+    start = tensor.data_ptr()
+    base = storage.data_ptr()
+    size = storage.nbytes()
+    contiguous = tensor.is_contiguous()
+    end = start + tensor.numel() * tensor.element_size() if contiguous else None
+    return {
+        "base_ptr": base,
+        "nbytes": size,
+        "tensor_ptr": start,
+        "contiguous": contiguous,
+        "logical_end_ptr": end,
+        "within_storage": base <= start <= end <= base + size if contiguous else None,
+    }
+
+
+def _allocation_context(output):
+    """Inspect only the direct FSDP caller; never invoke or replace its allocator."""
+    frame = inspect.currentframe()
+    caller = None
+    try:
+        caller = frame.f_back.f_back if frame is not None and frame.f_back is not None else None
+        if caller is None:
+            return {"available": False, "reason": "no_caller_frame"}
+        if caller.f_code.co_name != "foreach_reduce" or caller.f_locals.get("reduce_scatter_input") is not output:
+            return {"available": False, "reason": "not_direct_fsdp_caller"}
+        comm = caller.f_locals.get("reduce_scatter_comm")
+        if comm is None:
+            return {"available": False, "reason": "no_reduce_scatter_comm"}
+        allocate = comm.allocate
+        function = getattr(allocate, "__func__", allocate)
+        code = getattr(function, "__code__", None)
+        flags = vars(comm) if hasattr(comm, "__dict__") else {}
+        return {
+            "available": True,
+            "comm_type": f"{type(comm).__module__}.{type(comm).__qualname__}",
+            "allocate_module": getattr(function, "__module__", None),
+            "allocate_qualname": getattr(function, "__qualname__", None),
+            "allocate_file": code.co_filename if code is not None else None,
+            "allocate_line": code.co_firstlineno if code is not None else None,
+            "use_mem_cache": flags.get("_use_mem_cache") if isinstance(flags.get("_use_mem_cache"), bool) else None,
+            "mem_cache_flag": flags.get("_mem_cache_flag") if isinstance(flags.get("_mem_cache_flag"), bool) else None,
+        }
+    finally:
+        # Do not retain frames, comm objects, or their live tensors across calls.
+        del caller, frame
+
+
 def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_size) -> None:
     """Preserve FSDP's output buffer and packing order using torch's decomposition."""
     global _call_count
@@ -101,6 +151,11 @@ def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_si
         out = reduce_scatter_input.view(world_size, -1)
         snapshot["inputs"] = [_tensor_metadata(t) for t in unsharded_grads]
         snapshot["out"] = _tensor_metadata(out)
+        if call_id == probe_call:
+            stage = "allocation_metadata"
+            snapshot["allocation_context"] = _allocation_context(reduce_scatter_input)
+            snapshot["out_storage"] = _storage_metadata(out)
+            report("allocation_context", **snapshot["allocation_context"], out_storage=snapshot["out_storage"])
         stage = "stream_context"
         synchronize, stream = _device_context(out.device)
         snapshot.update(stream=stream, sync_scope="device" if synchronize and sync_enabled else "none")
@@ -139,6 +194,7 @@ def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_si
                     fresh = run_phase("allocate_fresh_output", torch.empty_like, out)
                     stage = "validate_fresh_output"
                     snapshot["fresh_out"] = _tensor_metadata(fresh)
+                    snapshot["fresh_storage"] = _storage_metadata(fresh)
                     if fresh.data_ptr() == out.data_ptr():
                         raise ValueError("Fresh output must have a different address from the live FSDP output")
                     report("buffers", **snapshot)
@@ -211,7 +267,7 @@ def install_chunkcat_eager():
     print(
         f"[chunkcat-eager] installed rank={os.environ.get('RANK', '?')} torch={torch.__version__} "
         f"packing_mode={mode} "
-        f"boundary_sync={os.environ.get('VEOMNI_CHUNKCAT_SYNC', '1')} probe_call={probe_call} schema=5",
+        f"boundary_sync={os.environ.get('VEOMNI_CHUNKCAT_SYNC', '1')} probe_call={probe_call} schema=6",
         flush=True,
     )
     return original
