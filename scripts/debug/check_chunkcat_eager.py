@@ -196,6 +196,118 @@ def check_rowcopy_boundaries(entry):
     print("PASS: CPU rowcopy placement, output guards, metadata, and operation/synchronization failure attribution")
 
 
+def check_fresh_output_boundaries(entry):
+    """Probe one call only; compare identical sources and preserve FSDP's output."""
+    inputs = [torch.arange(5, dtype=torch.bfloat16), torch.arange(3, dtype=torch.bfloat16) + 20]
+    expected = torch.empty((2, 5), dtype=torch.float32)
+    torch._chunk_cat(inputs, 0, 2, out=expected)
+    original_stages = [f"copy_tensor_{index}_row_{row}" for index in range(2) for row in range(2)]
+    fresh_stages = ["fresh_" + stage for stage in original_stages]
+    stages = ["allocate_fresh_output", *fresh_stages, *original_stages]
+    failures = [None, *stages, "sync:allocate_fresh_output", "sync:" + fresh_stages[-1], "sync:" + original_stages[0]]
+    for failure in failures:
+        backing = torch.full((14,), -999.0)
+        output = backing[2:12]
+        captured = io.StringIO()
+        error = RuntimeError(f"injected {failure}")
+        calls, copies, allocations = [], [], []
+        allocate = torch.empty_like
+
+        def current_stage(captured=captured):
+            return json.loads(captured.getvalue().splitlines()[-1].split(" ", 2)[2])["stage"]
+
+        def synchronize(failure=failure, error=error):
+            if failure == "sync:" + current_stage():
+                raise error
+
+        def allocate_output(
+            out, failure=failure, error=error, calls=calls, allocate=allocate, allocations=allocations
+        ):
+            calls.append(current_stage())
+            if failure == current_stage():
+                raise error
+            fresh = allocate(out)
+            assert fresh.data_ptr() != out.data_ptr()
+            allocations.append(fresh)
+            return fresh
+
+        def copy(destination, source, failure=failure, error=error, calls=calls, copies=copies):
+            stage = current_stage()
+            calls.append(stage)
+            copies.append((stage, source.data_ptr(), destination.data_ptr(), source.numel()))
+            if failure == stage:
+                raise error
+            destination.copy_(source)
+
+        with (
+            patch.dict(os.environ, VEOMNI_CHUNKCAT_MODE="rowcopy_fresh", VEOMNI_CHUNKCAT_SYNC="1"),
+            patch.dict(os.environ, VEOMNI_CHUNKCAT_PROBE_CALL="545"),
+            patch.object(entry, "_call_count", 544),
+            patch.object(entry, "_device_context", return_value=(synchronize, "mock-stream")),
+            patch.object(entry, "_copy_row", side_effect=copy),
+            patch.object(torch, "empty_like", side_effect=allocate_output),
+            patch.object(torch, "cat", side_effect=AssertionError("fresh probe must not call cat")),
+            contextlib.redirect_stdout(captured),
+        ):
+            try:
+                assert entry.eager_reduce_scatter_copy_in(inputs, output, 2) is None
+            except RuntimeError as caught:
+                assert failure is not None and caught is error
+            else:
+                assert failure is None
+                torch.testing.assert_close(output.view_as(expected), expected, rtol=0, atol=0)
+                torch.testing.assert_close(allocations[0], expected, rtol=0, atol=0)
+                for fresh_copy, original_copy in zip(copies[:4], copies[4:]):
+                    assert fresh_copy[1] == original_copy[1]  # identical source addresses
+                    assert fresh_copy[2] != original_copy[2]
+                    assert fresh_copy[3] == original_copy[3]
+        assert backing[:2].tolist() == [-999.0] * 2 and backing[12:].tolist() == [-999.0] * 2
+        records = [json.loads(line.split(" ", 2)[2]) for line in captured.getvalue().splitlines()]
+        if failure is None:
+            assert calls == stages
+            assert [r["target"] for r in records if r["event"] == "target_complete"] == ["fresh", "original"]
+        else:
+            stage = failure.removeprefix("sync:")
+            assert calls == stages[: stages.index(stage) + 1]
+            assert records[-1]["event"] == "failed" and records[-1]["stage"] == stage
+            if stage.startswith("fresh_") or stage == "allocate_fresh_output":
+                assert (output == -999).all()  # no original-buffer writes after fresh failure
+            if stage.startswith("fresh_"):
+                assert records[-1]["copy"]["target"] == "fresh"
+            elif stage.startswith("copy_"):
+                assert records[-1]["copy"]["target"] == "original"
+        metadata = next(r for r in records if "inputs" in r)
+        assert metadata["probe_call"] == 545 and metadata["probe_active"]
+
+    for call_id in (544, 546):
+        captured = io.StringIO()
+        with (
+            patch.dict(os.environ, VEOMNI_CHUNKCAT_MODE="rowcopy_fresh", VEOMNI_CHUNKCAT_SYNC="1"),
+            patch.dict(os.environ, VEOMNI_CHUNKCAT_PROBE_CALL="545"),
+            patch.object(entry, "_call_count", call_id - 1),
+            patch.object(torch, "empty_like", side_effect=AssertionError("non-probe call must not allocate")),
+            contextlib.redirect_stdout(captured),
+        ):
+            assert entry.eager_reduce_scatter_copy_in(inputs, output, 2) is None
+        torch.testing.assert_close(output.view_as(expected), expected, rtol=0, atol=0)
+        records = [json.loads(line.split(" ", 2)[2]) for line in captured.getvalue().splitlines()]
+        assert not any(r.get("probe_active") for r in records)
+        assert not any(r["stage"].startswith("fresh_") for r in records)
+
+    with patch.dict(os.environ, VEOMNI_CHUNKCAT_MODE="rowcopy_fresh"):
+        for value in ("0", "-1", "bad"):
+            with patch.dict(os.environ, VEOMNI_CHUNKCAT_PROBE_CALL=value):
+                try:
+                    entry._probe_call()
+                except ValueError:
+                    pass
+                else:
+                    raise AssertionError("invalid probe call accepted")
+    print(
+        f"PASS: CPU fresh-output probe; {len(failures)} boundary cases, identical sources, call gating, output guards"
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--device", default="cpu")
@@ -207,6 +319,7 @@ def main():
     check_diagnostic_boundaries(entry)
     check_precast_boundaries(entry)
     check_rowcopy_boundaries(entry)
+    check_fresh_output_boundaries(entry)
     from torch.distributed.fsdp._fully_shard import _fsdp_collectives
 
     original = entry.install_chunkcat_eager()
@@ -247,15 +360,21 @@ def main():
                             torch.stack((x, x), dim=-1).to(args.device)[..., 0] if noncontiguous else x.to(args.device)
                             for x in inputs
                         ]
-                        for mode in ("eager", "precast", "rowcopy"):
+                        for mode in ("eager", "precast", "rowcopy", "rowcopy_fresh"):
                             actual.fill_(float("nan"))
-                            with patch.dict(os.environ, VEOMNI_CHUNKCAT_MODE=mode, VEOMNI_CHUNKCAT_SYNC="1"):
+                            with patch.dict(
+                                os.environ,
+                                VEOMNI_CHUNKCAT_MODE=mode,
+                                VEOMNI_CHUNKCAT_SYNC="1",
+                                VEOMNI_CHUNKCAT_PROBE_CALL=str(entry._call_count + 1),
+                            ):
                                 try:
                                     result = _fsdp_collectives.foreach_reduce_scatter_copy_in(
                                         device_inputs, actual, chunks
                                     )
                                 except ValueError as error:
-                                    assert mode == "rowcopy" and noncontiguous and input_dtype == output_dtype
+                                    assert mode in ("rowcopy", "rowcopy_fresh")
+                                    assert noncontiguous and input_dtype == output_dtype
                                     assert str(error) == "rowcopy requires contiguous packed tensors and output"
                                     packed = entry._pad_chunk(inputs, dim=0, num_chunks=chunks)
                                     assert any(not t.is_contiguous() for t in packed)

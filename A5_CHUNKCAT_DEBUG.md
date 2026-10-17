@@ -134,7 +134,7 @@ storage offset, byte size, and destination column bounds before copying. Each
 copy has its own device synchronization. On failure, the cached `copy` field
 identifies the active interval; no further device work is attempted. Layout
 validation rejects incompatible dimensions/widths or noncontiguous buffers.
-The entry logs `schema=4`. The experiment launcher may select `rowcopy` by default;
+The entry logs `schema=5`. The experiment launcher may select `rowcopy` by default;
 check `packing_mode` in the installed message and saved runtime environment.
 
 This changes kernel selection, transfer sizes, timing, and synchronization count.
@@ -146,6 +146,46 @@ cases are expected to fail layout validation before any output writes. The check
 reports successful parity cases and rejected-layout cases separately.
 CPU checks forbid cat in rowcopy, compare exact rank-major values, check output
 guards with a nonzero storage offset, and inject early/late copy and sync failures.
+
+### Fresh destination probe at one packing call
+
+The rowcopy training run also failed at call 545 after all 15 casts completed.
+The failing device kernel was TensorMove, so bypassing ConcatD did not resolve
+the observed failure. This does not establish whether the source, destination,
+allocation lifecycle, earlier corruption, or device runtime caused the error.
+
+Set `VEOMNI_CHUNKCAT_MODE=rowcopy_fresh`, `VEOMNI_CHUNKCAT_SYNC=1`, and
+`VEOMNI_CHUNKCAT_PROBE_CALL=545` (the default probe call). All other calls retain
+rowcopy. At the selected call, after layout validation and all casts:
+
+1. `allocate_fresh_output` allocates and synchronizes an `empty_like` output while
+   the original FSDP output remains alive. Both buffer addresses are recorded;
+   identical live addresses are rejected.
+2. `fresh_copy_tensor_I_row_R` copies each converted source slice to the fresh
+   destination, using the same order, copy sizes, and per-copy synchronization.
+3. Only after all fresh copies complete, `copy_tensor_I_row_R` replays the same
+   **converted sources** into the **original FSDP output**. This is not a copy
+   from the fresh buffer back to the original. Both outputs stay alive throughout
+   the comparison; successful return preserves the original output identity and
+   the FSDP helper's `None` return contract.
+
+Each completed target emits `target_complete` with `target=fresh|original`.
+Failure immediately stops further work and reports cached `out`, `fresh_out`
+(if allocated and synchronized), and active `copy.target` metadata. A fresh-copy
+failure leaves the original output unwritten; it cannot tell us whether an
+original-buffer copy would have passed afterward. A fresh pass followed by an
+original failure strengthens the destination-specific hypothesis but does not
+prove it: the extra allocation, elapsed time, and repeated reads change runtime
+conditions. Two passes mean this perturbed call passed, not that the original
+failure is fixed. Allocation failure/OOM is a separate diagnostic outcome.
+
+The probe adds another output-sized allocation (about 3.35 GB / 3.12 GiB for the
+observed group), in addition to precast's FP32 temporaries. No new destination is
+allocated on other calls. Inspect the actual call's input/output metadata: a call
+number is not a model-layer identity and can change if the workload changes.
+CPU checks cover selected/nonselected calls, identical source pointers and copy
+sizes across both passes, output guards, precise values, and injected allocation,
+copy, and synchronization failures. They do not validate A5 memory behavior.
 
 Rollback: run `tasks/train_vlm.py` in a new process. Do not change AdamW foreach
 at the same time. Full logs, device dumps, datasets, model weights, host paths,

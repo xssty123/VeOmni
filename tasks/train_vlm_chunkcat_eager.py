@@ -15,11 +15,18 @@ _call_count = 0
 
 def _packing_mode():
     mode = os.environ.get("VEOMNI_CHUNKCAT_MODE", "eager")
-    if mode not in ("eager", "precast", "rowcopy"):
-        raise ValueError("VEOMNI_CHUNKCAT_MODE must be eager, precast, or rowcopy")
-    if mode in ("precast", "rowcopy") and os.environ.get("VEOMNI_CHUNKCAT_SYNC", "1") != "1":
+    if mode not in ("eager", "precast", "rowcopy", "rowcopy_fresh"):
+        raise ValueError("VEOMNI_CHUNKCAT_MODE must be eager, precast, rowcopy, or rowcopy_fresh")
+    if mode in ("precast", "rowcopy", "rowcopy_fresh") and os.environ.get("VEOMNI_CHUNKCAT_SYNC", "1") != "1":
         raise ValueError(f"{mode} diagnosis requires VEOMNI_CHUNKCAT_SYNC=1")
     return mode
+
+
+def _probe_call():
+    call = int(os.environ.get("VEOMNI_CHUNKCAT_PROBE_CALL", "545"))
+    if call < 1:
+        raise ValueError("VEOMNI_CHUNKCAT_PROBE_CALL must be a positive integer")
+    return call
 
 
 def _cast_tensor(tensor, dtype):
@@ -58,10 +65,13 @@ def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_si
     _call_count += 1
     call_id = _call_count
     mode = _packing_mode()
+    probe_call = _probe_call() if mode == "rowcopy_fresh" else None
     sync_enabled = os.environ.get("VEOMNI_CHUNKCAT_SYNC", "1") == "1"
     verbose = call_id == 1 or os.environ.get("VEOMNI_CHUNKCAT_LOG_INPUTS") == "1" or sync_enabled
     stage = "metadata"
     snapshot = {"num_chunks": world_size, "sync_enabled": sync_enabled, "packing_mode": mode}
+    if probe_call is not None:
+        snapshot.update(probe_call=probe_call, probe_active=call_id == probe_call)
 
     def report(event, **details):
         # Use cached Python data only, including after a device failure.
@@ -101,7 +111,7 @@ def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_si
             report("begin")
             synchronize()
             report("complete")
-        if mode in ("precast", "rowcopy"):
+        if mode in ("precast", "rowcopy", "rowcopy_fresh"):
             packed = run_phase("pad_and_reshape", _pad_chunk, unsharded_grads, dim=0, num_chunks=world_size)
             snapshot["packed_inputs"] = [_tensor_metadata(t) for t in packed]
             snapshot["converted"] = []
@@ -124,26 +134,44 @@ def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_si
                     raise ValueError("rowcopy requires contiguous packed tensors and output")
                 if sum(t.shape[1] for t in converted) != out.shape[1]:
                     raise ValueError("Packed widths do not cover the FSDP output")
-                offset = 0
-                for index, tensor in enumerate(converted):
-                    width = tensor.shape[1]
-                    for row in range(world_size):
-                        stage = f"copy_tensor_{index}_row_{row}"
-                        source = tensor[row]
-                        destination = out[row, offset : offset + width]
-                        snapshot["copy"] = {
-                            "tensor_index": index,
-                            "row": row,
-                            "column_start": offset,
-                            "column_end": offset + width,
-                            "source": _tensor_metadata(source),
-                            "destination": _tensor_metadata(destination),
-                        }
-                        report("buffers", **snapshot["copy"])
-                        run_phase(stage, _copy_row, destination, source)
-                    offset += width
+                targets = [("original", out)]
+                if call_id == probe_call:
+                    fresh = run_phase("allocate_fresh_output", torch.empty_like, out)
+                    stage = "validate_fresh_output"
+                    snapshot["fresh_out"] = _tensor_metadata(fresh)
+                    if fresh.data_ptr() == out.data_ptr():
+                        raise ValueError("Fresh output must have a different address from the live FSDP output")
+                    report("buffers", **snapshot)
+                    # Keep both outputs alive and replay identical sources/copy sizes.
+                    # The original output must still be filled for FSDP's caller.
+                    targets.insert(0, ("fresh", fresh))
+                for target_name, target in targets:
+                    offset = 0
+                    for index, tensor in enumerate(converted):
+                        width = tensor.shape[1]
+                        for row in range(world_size):
+                            prefix = "fresh_" if target_name == "fresh" else ""
+                            stage = f"{prefix}copy_tensor_{index}_row_{row}"
+                            source = tensor[row]
+                            destination = target[row, offset : offset + width]
+                            snapshot["copy"] = {
+                                "target": target_name,
+                                "tensor_index": index,
+                                "row": row,
+                                "column_start": offset,
+                                "column_end": offset + width,
+                                "source": _tensor_metadata(source),
+                                "destination": _tensor_metadata(destination),
+                            }
+                            report("buffers", **snapshot["copy"])
+                            run_phase(stage, _copy_row, destination, source)
+                        offset += width
+                    if call_id == probe_call:
+                        report("target_complete", target=target_name)
                 snapshot.pop("copy", None)
-                del source, destination
+                del source, destination, target, targets
+                if call_id == probe_call:
+                    del fresh
             del tensor, value, converted, packed
         else:
             stage = "pack"
@@ -167,6 +195,7 @@ def install_chunkcat_eager():
     if os.environ.get("VEOMNI_CHUNKCAT_SYNC", "1") not in ("0", "1"):
         raise ValueError("VEOMNI_CHUNKCAT_SYNC must be 0 or 1")
     mode = _packing_mode()
+    probe_call = _probe_call() if mode == "rowcopy_fresh" else None
     if torch.__version__.split("+")[0].split(".")[:2] != ["2", "10"]:
         raise RuntimeError(f"This private FSDP diagnostic targets torch 2.10, found {torch.__version__}")
 
@@ -182,7 +211,7 @@ def install_chunkcat_eager():
     print(
         f"[chunkcat-eager] installed rank={os.environ.get('RANK', '?')} torch={torch.__version__} "
         f"packing_mode={mode} "
-        f"boundary_sync={os.environ.get('VEOMNI_CHUNKCAT_SYNC', '1')} schema=4",
+        f"boundary_sync={os.environ.get('VEOMNI_CHUNKCAT_SYNC', '1')} probe_call={probe_call} schema=5",
         flush=True,
     )
     return original
