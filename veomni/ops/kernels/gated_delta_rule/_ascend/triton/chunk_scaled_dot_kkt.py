@@ -66,6 +66,12 @@ def chunk_scaled_dot_kkt_fwd_kernel(
             T_local = T
 
         for i_h in range(H):
+            o_t = i_t * BT + tl.arange(0, BT)
+            m_t = o_t < T_local
+            row_indices = tl.arange(0, BT)[:, None]
+            col_indices = tl.arange(0, BT)[None, :]
+            m_A = (row_indices > col_indices) & m_t[:, None] & m_t[None, :]
+
             k_batch_off = i_b * T_max * H * K
             beta_batch_off = i_b * H * T_max
             g_batch_off = i_b * H * T_max
@@ -79,27 +85,19 @@ def chunk_scaled_dot_kkt_fwd_kernel(
                 p_k = tl.make_block_ptr(k + k_batch_off + (bos * H + i_h) * K, (T_local, K), (H * K, 1), (i_t * BT, i_k * BK), (BT, BK), (1, 0))
                 b_k = tl.load(p_k, boundary_check=(0, 1))
                 dot_product = tl.dot(b_k, tl.trans(b_k))
-
-                o_t = i_t * BT + tl.arange(0, BT)
-                o_t = o_t.to(tl.float32)
-                T_mask = (o_t < T_local).to(tl.float32)
-
-                row_indices = tl.arange(0, BT)[:, None]
-                col_indices = tl.arange(0, BT)[None, :]
-                tril_mask = (row_indices > col_indices).to(tl.float32)
-                tril_mask = tril_mask * T_mask[:, None]
-                # Padded dot lanes can be NaN on Ascend, and multiplying
-                # those lanes by a zero mask does not clear NaN.
-                masked_dot = tl.where(tril_mask != 0.0, dot_product, 0.0)
-                b_A += masked_dot
+                b_A += tl.where(m_A, dot_product, 0.0)
 
             if USE_G:
                 p_g = tl.make_block_ptr(g + g_batch_off + bos + i_h * T_max, (T_local,), (1,), (i_t * BT,), (BT,), (0,))
                 b_g = tl.load(p_g, boundary_check=(0,))
+                # Keep the exponent as a bounded difference: splitting it into
+                # exp(g_i) * exp(-g_j) produces 0 * inf for large negative g.
                 b_g_diff = b_g[:, None] - b_g[None, :]
                 b_g_diff = tl.minimum(tl.maximum(b_g_diff, -50.0), 50.0)
                 b_A *= tl.exp(b_g_diff)
+
             b_A *= b_beta[:, None]
+            b_A = tl.where(m_A, b_A, 0)
 
             p_A = tl.make_block_ptr(A + A_batch_off + (bos * H + i_h) * BT, (T_local, BT), (BT * H, 1), (i_t * BT, 0), (BT, BT), (1, 0))
             tl.store(p_A, b_A.to(p_A.dtype.element_ty), boundary_check=(0, 1))

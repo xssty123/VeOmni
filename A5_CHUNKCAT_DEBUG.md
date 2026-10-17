@@ -277,6 +277,18 @@ Rollback: run `tasks/train_vlm.py` in a new process. Do not change AdamW foreach
 at the same time. Full logs, device dumps, datasets, model weights, host paths,
 and credentials remain outside this public fork.
 
+## KKT numerical comparison with the `npu` GDN backend
+
+The `npu` backend's `triton/chunk_scaled_dot_kkt.py` forward kernel now follows
+the supplied KKT patch: an explicit strict-lower mask includes valid rows and
+columns, each dot tile is masked with `where` before accumulation, gating uses
+`exp(clamp(g_i - g_j, -50, 50))`, beta scales the rows, and a final `where`
+clears masked lanes again after scaling. The patch's chunk/token and beta names
+map to this kernel's `i_t`, `T_local`, and `b_beta`; indexing and launch geometry
+remain unchanged. The `npu_ascendc` backend's separate `triton_core` copy is not
+part of this numerical comparison. This change does not replace the FSDP
+original output with fresh storage or establish an A5 numerical pass.
+
 ## Standalone Cast / packing reproduction
 
 The first eager SFT attempt reached step 1 with finite logged gradient norm, then
