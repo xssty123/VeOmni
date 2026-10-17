@@ -19,6 +19,34 @@ _call_count = 0
 _allocation_probe = None
 
 
+def install_adamw_scalar_diagnostic(optimizer_module):
+    """Override only this process's VeOmni AdamW constructor before state creation."""
+    original = optimizer_module.AdamW
+    if original is not torch.optim.AdamW:
+        raise RuntimeError("Unexpected VeOmni AdamW binding; refusing optimizer diagnostic")
+    verified = []
+
+    def build(*args, **kwargs):
+        kwargs.update(foreach=False, fused=False)
+        optimizer = original(*args, **kwargs)
+        if not optimizer.param_groups or any(
+            group.get("foreach") is not False or group.get("fused") is not False for group in optimizer.param_groups
+        ):
+            raise RuntimeError("AdamW parameter groups override the requested False/False diagnostic")
+        record = {
+            "rank": os.environ.get("RANK", "?"),
+            "foreach": False,
+            "fused": False,
+            "groups": len(optimizer.param_groups),
+        }
+        verified.append(record)
+        print(f"[adamw-scalar-diag] verified {json.dumps(record)}", flush=True)
+        return optimizer
+
+    optimizer_module.AdamW = build
+    return verified
+
+
 def _size_options():
     chunk = int(os.environ.get("VEOMNI_CHUNKCAT_COPY_CHUNK_BYTES", "0"))
     extra = int(os.environ.get("VEOMNI_CHUNKCAT_ALLOC_EXTRA_BYTES", "0"))
@@ -517,5 +545,14 @@ if __name__ == "__main__":
     from veomni.trainer.vlm_trainer import VeOmniVLMArguments, VLMTrainer
 
     args = parse_args(VeOmniVLMArguments)
+    adamw_scalar = os.environ.get("VEOMNI_ADAMW_SCALAR_DIAG", "0")
+    if adamw_scalar not in ("0", "1"):
+        raise ValueError("VEOMNI_ADAMW_SCALAR_DIAG must be 0 or 1")
+    if adamw_scalar == "1":
+        import veomni.optim.optimizer as optimizer_module
+
+        verified_optimizers = install_adamw_scalar_diagnostic(optimizer_module)
     trainer = VLMTrainer(args)
+    if adamw_scalar == "1" and not verified_optimizers:
+        raise RuntimeError("AdamW diagnostic constructor was not reached; refusing to start training")
     trainer.train()

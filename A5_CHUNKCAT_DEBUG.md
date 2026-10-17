@@ -379,3 +379,13 @@ on CPU with simulated communication/streams. It checks exact packing and output
 gradients, call selection, original-buffer preservation, returned event/input
 identity, reference release and fail-stop behavior. It does not validate NPU
 stream execution or actual distributed communication.
+
+## AdamW implementation comparison
+
+With this diagnostic entry, `VEOMNI_ADAMW_SCALAR_DIAG=1` forces VeOmni's AdamW
+constructor to receive `foreach=False, fused=False` before optimizer state is
+created. The default `0` preserves the existing SFT fused optimizer. This does
+not change FSDP packing, GDN, or installed torch files. Each constructed AdamW
+checks its actual parameter groups and logs `[adamw-scalar-diag] verified` with
+the rank and group count. Conflicting group overrides or an unused constructor
+stop the run before training. This is a controlled comparison, not a proven fix.
