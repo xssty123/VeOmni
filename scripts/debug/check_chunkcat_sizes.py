@@ -2,6 +2,7 @@
 
 import contextlib
 import importlib.util
+import inspect
 import io
 import json
 import os
@@ -120,6 +121,7 @@ def check_allocation_sizes():
         entry = load_entry()
         outputs = []
 
+        @torch.no_grad()
         def foreach_reduce(reduce_scatter_comm, outputs=outputs, entry=entry):
             reduce_scatter_input = reduce_scatter_comm.allocate((14,), dtype=torch.float32, device="cpu")
             outputs.append(reduce_scatter_input)
@@ -213,6 +215,85 @@ def check_installed_contract():
     print("PASS: installed torch FSDP signature/source guard and process-local hook installation")
 
 
+def check_installed_allocation_path():
+    """Run installed FSDP allocation/copy code on CPU, stopping before communication."""
+    from torch.distributed.fsdp._fully_shard import _fsdp_collectives as collectives
+
+    class BeforeCommunication(Exception):
+        pass
+
+    inputs = [torch.arange(9, dtype=torch.bfloat16), torch.arange(3, dtype=torch.bfloat16) + 20]
+    expected = torch.empty((2, 7))
+    torch._chunk_cat(inputs, 0, 2, out=expected)
+    assert collectives.foreach_reduce.__code__ is not inspect.unwrap(collectives.foreach_reduce).__code__
+    stream = SimpleNamespace(wait_stream=lambda other: None)
+    device_handle = SimpleNamespace(current_stream=lambda: stream, stream=lambda other: contextlib.nullcontext())
+    for extra_bytes in (64, 64 * 1024 * 1024):
+        entry = load_entry()
+        captured = io.StringIO()
+        outputs = []
+
+        def stop_before_communication(tensor, factor, outputs=outputs):
+            frame = inspect.currentframe()
+            caller = frame.f_back
+            try:
+                assert caller.f_code is inspect.unwrap(collectives.foreach_reduce).__code__
+                assert caller.f_locals["reduce_scatter_input"] is tensor
+                communication_output = caller.f_locals["reduce_output"]
+                assert communication_output.shape == (7,)
+                assert communication_output.untyped_storage().nbytes() == 28
+                outputs.append(tensor)
+            finally:
+                del caller, frame
+            raise BeforeCommunication
+
+        assert "allocate" not in vars(collectives.DefaultReduceScatter)
+        with (
+            patch.dict(os.environ, VEOMNI_CHUNKCAT_ALLOC_EXTRA_BYTES=str(extra_bytes)),
+            patch.object(collectives, "foreach_reduce_scatter_copy_in", entry.eager_reduce_scatter_copy_in),
+            patch.object(collectives, "_get_device_handle", return_value=device_handle),
+            patch.object(collectives, "_get_gradient_divide_factors", return_value=(1, 1, None, None)),
+            patch.object(collectives, "_div_if_needed", new=stop_before_communication),
+            contextlib.redirect_stdout(captured),
+        ):
+            entry._install_allocation_size_probe(collectives, extra_bytes)
+            try:
+                for call_id in (544, 545, 546):
+                    entry._call_count = call_id - 1
+                    try:
+                        collectives.foreach_reduce(
+                            fsdp_params=[SimpleNamespace(fsdp_placement=SimpleNamespace(dim=0)) for _ in inputs],
+                            unsharded_grads=list(inputs),
+                            reduce_scatter_group=SimpleNamespace(size=lambda: 2),
+                            reduce_scatter_comm=collectives.DefaultReduceScatter(),
+                            reduce_scatter_stream=stream,
+                            orig_dtype=torch.bfloat16,
+                            reduce_dtype=torch.float32,
+                            device=torch.device("cpu"),
+                            gradient_divide_factor=None,
+                            all_reduce_group=None,
+                            all_reduce_stream=stream,
+                            all_reduce_grads=False,
+                            partial_reduce_output=None,
+                            all_reduce_hook=None,
+                        )
+                    except BeforeCommunication:
+                        pass
+                    else:
+                        raise AssertionError("installed FSDP did not reach the communication boundary")
+                    output = outputs[-1]
+                    assert entry._call_count == call_id
+                    assert output.shape == (14,) and output.storage_offset() == 0
+                    assert output.untyped_storage().nbytes() == 56 + (extra_bytes if call_id == 545 else 0)
+                    torch.testing.assert_close(output.view_as(expected), expected, rtol=0, atol=0)
+                assert len(outputs) == 3 and entry._allocation_probe[0]() is outputs[1]
+            finally:
+                del collectives.DefaultReduceScatter.allocate
+        rows = records(captured)
+        assert sum("requested_storage_bytes" in r and "storage" in r for r in rows) == 1
+    print("PASS: installed decorated FSDP input/copy/output path, 64 B and 64 MiB extra, calls 544/545/546")
+
+
 def main():
     # Never inherit an experiment switch from the invoking shell during CPU validation.
     with patch.dict(
@@ -230,6 +311,7 @@ def main():
         check_copy_sizes()
         check_allocation_sizes()
         check_installed_contract()
+        check_installed_allocation_path()
     print("PASS: CPU size diagnostics only; no NPU operation or training executed")
 
 

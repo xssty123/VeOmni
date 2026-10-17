@@ -237,6 +237,8 @@ training setup. Ordinary training and all nonselected packing calls are unchange
   wrapped, and only when called directly by the inspected `foreach_reduce`
   using that communication object. The unpatched `DefaultAllocMixin.allocate`
   signature and single `torch.empty` implementation are checked before wrapping.
+  Caller matching unwraps `foreach_reduce`'s `no_grad` decorator to compare
+  against the function body that actually calls the allocator.
   The same original allocator allocates the larger storage; no original-sized
   throwaway allocation is made. All-gather and nonselected allocations are
   untouched. The returned view keeps the backing storage alive naturally; the
@@ -263,6 +265,13 @@ CPU validation (no NPU allocation or training):
 python scripts/debug/check_chunkcat_sizes.py
 python scripts/debug/check_chunkcat_eager.py --device cpu
 ```
+
+The size checks cover decorated callers and the installed PyTorch
+`foreach_reduce` allocation/copy/output path on small CPU tensors. Device-stream
+plumbing is stubbed, and execution stops before communication. They verify the
+selected input grows by 64 bytes or 64 MiB while neighboring calls and the
+communication output keep their original capacities. This does not validate
+NPU allocation or distributed training.
 
 Rollback: run `tasks/train_vlm.py` in a new process. Do not change AdamW foreach
 at the same time. Full logs, device dumps, datasets, model weights, host paths,

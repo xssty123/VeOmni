@@ -54,7 +54,8 @@ def _install_allocation_size_probe(collectives, extra_bytes):
     if [ast.dump(node) for node in body] != [ast.dump(node) for node in expected]:
         raise RuntimeError("Unexpected FSDP allocation implementation; refusing to replace it")
     probe_call = _probe_call()
-    foreach_code = collectives.foreach_reduce.__code__
+    # no_grad wraps foreach_reduce; allocate is called by its inner function body.
+    foreach_code = inspect.unwrap(collectives.foreach_reduce).__code__
 
     def allocate(self, size, *, dtype, device):
         global _allocation_probe
