@@ -54,7 +54,7 @@ bash train.sh tasks/train_vlm_chunkcat_eager.py /absolute/path/to/training.yaml
 ```
 
 Look for `[chunkcat-eager] installed` on every rank with `boundary_sync=1`
-and the selected `packing_mode` (`schema=6` in this revision).
+and the selected `packing_mode` (`schema=7` in this revision).
 The debug entry now defaults `VEOMNI_CHUNKCAT_SYNC` to `1`: device-wide NPU
 synchronization immediately before and after each packing call. This changes
 timing and overlap, so a passing run is diagnostic evidence, not a validated fix.
@@ -212,6 +212,57 @@ Copy order, temporary allocations, synchronization, and the FSDP output remain
 unchanged from the preceding fresh-output experiment. CPU checks cover allocator
 provenance without calling it, offset views, noncontiguous bounds, missing caller
 fallback, and preservation of cached metadata on injected failures.
+
+### Independent size probes (schema 7)
+
+Keep `rowcopy_fresh`, synchronization, and the selected call fixed. Both controls
+are disabled by default and are mutually exclusive; setting both aborts before
+training setup. Ordinary training and all nonselected packing calls are unchanged.
+
+* `VEOMNI_CHUNKCAT_COPY_CHUNK_BYTES=8388608`: split only the selected original
+  row into at most 8 MiB per copy, with synchronization after every part. The
+  default row is tensor 7 / row 5 for ranks 0–3, tensor 8 / row 4 for ranks 4–7.
+  Other ranks require explicit `VEOMNI_CHUNKCAT_COPY_SLICE=INDEX:ROW`. The latter
+  can also override the slice for a different reproduction. Indices are zero
+  based. Fresh copies and all preceding original copies retain their old sizes.
+  The entire row is covered, including a short final part. `copy_part` records
+  source/destination addresses and row byte offsets; `split_row_complete` means
+  all parts synchronized. A failure aborts without a larger-copy retry. This
+  changes copy size, kernel dispatch, timing, and synchronization count, but not
+  the logical data, original allocation, or row coverage. Compare actual base
+  addresses across runs; do not reuse a numeric address from an exited process.
+* `VEOMNI_CHUNKCAT_ALLOC_EXTRA_BYTES=67108864`: enlarge the original FSDP
+  allocation at the selected call by 64 MiB, returning its zero-offset prefix
+  with the original shape/dtype/stride. Only `DefaultReduceScatter.allocate` is
+  wrapped, and only when called directly by the inspected `foreach_reduce`
+  using that communication object. The unpatched `DefaultAllocMixin.allocate`
+  signature and single `torch.empty` implementation are checked before wrapping.
+  The same original allocator allocates the larger storage; no original-sized
+  throwaway allocation is made. All-gather and nonselected allocations are
+  untouched. The returned view keeps the backing storage alive naturally; the
+  diagnostic stores a weak reference and verifies identity/capacity at copy-in.
+  A bypassed/replaced hook aborts instead of silently testing the old capacity.
+  Copy sizes and fresh-buffer size remain unchanged. Additional capacity can
+  change addresses, memory pressure, mapping and subsequent fresh allocation;
+  passing is not proof of a capacity-only root cause. Requested storage bytes
+  are not necessarily the underlying allocator block's reserved/physical size.
+
+Allocation events are `allocation_resize_begin`, `allocation_resize_returned`,
+and `allocation_resize_failed`. Returned does not mean device completion; the
+existing packing pre-sync still provides the device boundary. These events
+occur before copy-in and do not carry its usual stage/event JSON fields.
+Never enable either experiment together with another allocator change. Do not
+shrink the actual SFT output below its required logical capacity. Smaller
+standalone allocations remain a separate follow-up, not a training equivalence
+check. Each experiment runs in a new process and must be examined before the
+next; no automatic size sweep or training launch is provided.
+
+CPU validation (no NPU allocation or training):
+
+```bash
+python scripts/debug/check_chunkcat_sizes.py
+python scripts/debug/check_chunkcat_eager.py --device cpu
+```
 
 Rollback: run `tasks/train_vlm.py` in a new process. Do not change AdamW foreach
 at the same time. Full logs, device dumps, datasets, model weights, host paths,
