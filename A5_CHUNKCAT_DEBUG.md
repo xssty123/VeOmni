@@ -352,3 +352,30 @@ CPU plumbing checks (small shapes only, not A5 validation):
 REPRO_DEVICE=cpu bash scripts/debug/run_a5_cast_repro.sh all --size tiny --iterations 2
 REPRO_DEVICE=cpu bash scripts/debug/run_a5_cast_repro.sh all --size tiny --iterations 2 --allocation fresh
 ```
+
+## Single-call fresh input takeover
+
+`VEOMNI_CHUNKCAT_MODE=rowcopy_takeover` preserves the synchronous row-copy
+diagnostic, but at `VEOMNI_CHUNKCAT_PROBE_CALL` (default 545) fills only the fresh
+buffer. Both size controls must be zero and `VEOMNI_CHUNKCAT_SYNC=1` is required.
+The original buffer stays alive while fresh is allocated and filled, as in the
+comparison probe. After copying, the original buffer can be released normally.
+
+The entry adapts the installed torch 2.10 `foreach_reduce` in process: its
+copy-in call binds the returned tensor to `reduce_scatter_input`. Signature,
+decorator, copy site, communication input and returned lifetime-state structure
+are checked before installation. Both the collectives and parameter-group aliases
+are replaced; installed torch files remain untouched. Stream waits and returned
+communication events are preserved. Other calls still fill and return original.
+
+At the selected call, `takeover_selected`, `communication_input` and
+`lifetime_input` report the fresh pointer at selection, communication submission
+and return. Submission is not device completion. No original row copies should
+appear for that call. Later calls are deliberately not switched automatically.
+This is a diagnostic bypass, not a root-cause fix or numerical-equivalence claim.
+
+`python scripts/debug/check_chunkcat_takeover.py` runs the installed FSDP function
+on CPU with simulated communication/streams. It checks exact packing and output
+gradients, call selection, original-buffer preservation, returned event/input
+identity, reference release and fail-stop behavior. It does not validate NPU
+stream execution or actual distributed communication.

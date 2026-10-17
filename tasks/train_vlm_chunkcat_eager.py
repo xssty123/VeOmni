@@ -3,6 +3,7 @@
 import ast
 import inspect
 import json
+import linecache
 import math
 import os
 import textwrap
@@ -113,9 +114,9 @@ def _install_allocation_size_probe(collectives, extra_bytes):
 
 def _packing_mode():
     mode = os.environ.get("VEOMNI_CHUNKCAT_MODE", "eager")
-    if mode not in ("eager", "precast", "rowcopy", "rowcopy_fresh"):
-        raise ValueError("VEOMNI_CHUNKCAT_MODE must be eager, precast, rowcopy, or rowcopy_fresh")
-    if mode in ("precast", "rowcopy", "rowcopy_fresh") and os.environ.get("VEOMNI_CHUNKCAT_SYNC", "1") != "1":
+    if mode not in ("eager", "precast", "rowcopy", "rowcopy_fresh", "rowcopy_takeover"):
+        raise ValueError("Invalid VEOMNI_CHUNKCAT_MODE")
+    if mode != "eager" and os.environ.get("VEOMNI_CHUNKCAT_SYNC", "1") != "1":
         raise ValueError(f"{mode} diagnosis requires VEOMNI_CHUNKCAT_SYNC=1")
     return mode
 
@@ -207,14 +208,15 @@ def _allocation_context(output):
         del caller, frame
 
 
-def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_size) -> None:
+def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_size):
     """Preserve FSDP's output buffer and packing order using torch's decomposition."""
     global _call_count
     _call_count += 1
     call_id = _call_count
     mode = _packing_mode()
     chunk_bytes, extra_bytes = _size_options()
-    probe_call = _probe_call() if mode == "rowcopy_fresh" else None
+    probe_call = _probe_call() if mode in ("rowcopy_fresh", "rowcopy_takeover") else None
+    replacement = None
     sync_enabled = os.environ.get("VEOMNI_CHUNKCAT_SYNC", "1") == "1"
     verbose = call_id == 1 or os.environ.get("VEOMNI_CHUNKCAT_LOG_INPUTS") == "1" or sync_enabled
     stage = "metadata"
@@ -273,7 +275,7 @@ def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_si
             report("begin")
             synchronize()
             report("complete")
-        if mode in ("precast", "rowcopy", "rowcopy_fresh"):
+        if mode in ("precast", "rowcopy", "rowcopy_fresh", "rowcopy_takeover"):
             packed = run_phase("pad_and_reshape", _pad_chunk, unsharded_grads, dim=0, num_chunks=world_size)
             snapshot["packed_inputs"] = [_tensor_metadata(t) for t in packed]
             snapshot["converted"] = []
@@ -315,6 +317,9 @@ def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_si
                     # Keep both outputs alive and replay identical sources/copy sizes.
                     # The original output must still be filled for FSDP's caller.
                     targets.insert(0, ("fresh", fresh))
+                    if mode == "rowcopy_takeover":
+                        targets = [("fresh", fresh)]
+                        replacement = fresh.view_as(reduce_scatter_input)
                 for target_name, target in targets:
                     offset = 0
                     for index, tensor in enumerate(converted):
@@ -378,20 +383,103 @@ def eager_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_si
             report("begin")
             synchronize()
             report("complete")
+        if mode == "rowcopy_takeover":
+            # The patched caller must bind this result, including its returned lifetime state.
+            if replacement is not None:
+                stage = "fresh_takeover"
+                report(
+                    "takeover_selected",
+                    original=_tensor_metadata(reduce_scatter_input),
+                    fresh=_tensor_metadata(replacement),
+                )
+            return reduce_scatter_input if replacement is None else replacement
     except Exception as error:
         report("failed", error_type=type(error).__name__, message=str(error), **snapshot)
         raise
 
 
+def _report_takeover_input(tensor, event="communication_input"):
+    if _call_count == _probe_call():
+        record = {
+            "event": event,
+            "rank": os.environ.get("RANK", "?"),
+            "call": _call_count,
+            "input": _tensor_metadata(tensor),
+        }
+        print(f"[chunkcat-eager] {event} {json.dumps(record)}", flush=True)
+
+
+def _install_fresh_takeover(collectives, param_group):
+    """Bind copy-in's result in the installed FSDP function; preserve its remaining AST."""
+    original = collectives.foreach_reduce
+    if param_group.foreach_reduce is not original:
+        raise RuntimeError("FSDP foreach_reduce aliases differ; refusing fresh takeover")
+    raw = inspect.unwrap(original)
+    tree = ast.parse(textwrap.dedent(inspect.getsource(raw)))
+    function = tree.body[0]
+    if raw.__closure__ or not isinstance(function, ast.FunctionDef) or function.name != "foreach_reduce":
+        raise RuntimeError("Unexpected FSDP function structure")
+    if [ast.unparse(n) for n in function.decorator_list] != ["torch.no_grad()"]:
+        raise RuntimeError("Unexpected FSDP decorators")
+    expected = "foreach_reduce_scatter_copy_in(unsharded_grads, reduce_scatter_input, world_size)"
+    copies = [n for n in ast.walk(function) if isinstance(n, ast.Expr) and ast.unparse(n.value) == expected]
+    communications = [
+        n
+        for n in ast.walk(function)
+        if isinstance(n, ast.Expr)
+        and isinstance(n.value, ast.Call)
+        and isinstance(n.value.func, ast.Name)
+        and n.value.func.id == "reduce_scatter_comm"
+    ]
+    returns = [n for n in ast.walk(function) if isinstance(n, ast.Return)]
+    if len(copies) != 1 or len(communications) != 1 or len(returns) != 1:
+        raise RuntimeError("Unexpected FSDP copy/communication/return sites")
+    if not any(
+        k.arg == "input_tensor" and ast.unparse(k.value) == "reduce_scatter_input"
+        for k in communications[0].value.keywords
+    ):
+        raise RuntimeError("Unexpected communication input")
+    if not isinstance(returns[0].value, ast.Tuple) or ast.unparse(returns[0].value.elts[0]) != "reduce_scatter_input":
+        raise RuntimeError("FSDP must return the communication input to retain its lifetime")
+
+    class BindInput(ast.NodeTransformer):
+        def visit_Return(self, node):
+            return [ast.parse('_veomni_report_takeover_input(reduce_scatter_input, "lifetime_input")').body[0], node]
+
+        def visit_Expr(self, node):
+            if node is copies[0]:
+                return ast.copy_location(
+                    ast.Assign(targets=[ast.Name(id="reduce_scatter_input", ctx=ast.Store())], value=node.value), node
+                )
+            if node is communications[0]:
+                return [ast.parse("_veomni_report_takeover_input(reduce_scatter_input)").body[0], node]
+            return node
+
+    tree = ast.fix_missing_locations(BindInput().visit(tree))
+    # Separate namespace avoids mutating installed torch globals. All original objects
+    # (streams, collectives, helpers) retain their identities; only these bindings differ.
+    namespace = dict(raw.__globals__)
+    namespace["foreach_reduce_scatter_copy_in"] = eager_reduce_scatter_copy_in
+    namespace["_veomni_report_takeover_input"] = _report_takeover_input
+    source = ast.unparse(tree) + "\n"
+    filename = "<veomni-fresh-takeover-foreach_reduce>"
+    linecache.cache[filename] = (len(source), None, source.splitlines(True), filename)
+    exec(compile(source, filename, "exec"), namespace)
+    replacement = namespace["foreach_reduce"]
+    if inspect.signature(replacement) != inspect.signature(original):
+        raise RuntimeError("Fresh takeover changed FSDP signature")
+    collectives.foreach_reduce = param_group.foreach_reduce = replacement
+
+
 def install_chunkcat_eager():
-    """Replace only the FSDP copy-in helper, independently in each worker process."""
+    """Install the copy-in diagnostic and, optionally, its input-binding adapter."""
     if os.environ.get("VEOMNI_CHUNKCAT_SYNC", "1") not in ("0", "1"):
         raise ValueError("VEOMNI_CHUNKCAT_SYNC must be 0 or 1")
     mode = _packing_mode()
     chunk_bytes, extra_bytes = _size_options()
     if chunk_bytes:
         _copy_slice()
-    probe_call = _probe_call() if mode == "rowcopy_fresh" else None
+    probe_call = _probe_call() if mode in ("rowcopy_fresh", "rowcopy_takeover") else None
     if torch.__version__.split("+")[0].split(".")[:2] != ["2", "10"]:
         raise RuntimeError(f"This private FSDP diagnostic targets torch 2.10, found {torch.__version__}")
 
@@ -405,11 +493,15 @@ def install_chunkcat_eager():
         raise RuntimeError("FSDP copy-in signature changed; refusing to install the diagnostic replacement")
     if extra_bytes:
         _install_allocation_size_probe(_fsdp_collectives, extra_bytes)
+    if mode == "rowcopy_takeover":
+        from torch.distributed.fsdp._fully_shard import _fsdp_param_group
+
+        _install_fresh_takeover(_fsdp_collectives, _fsdp_param_group)
     _fsdp_collectives.foreach_reduce_scatter_copy_in = eager_reduce_scatter_copy_in
     print(
         f"[chunkcat-eager] installed rank={os.environ.get('RANK', '?')} torch={torch.__version__} "
         f"packing_mode={mode} "
-        f"boundary_sync={os.environ.get('VEOMNI_CHUNKCAT_SYNC', '1')} probe_call={probe_call} schema=7 "
+        f"boundary_sync={os.environ.get('VEOMNI_CHUNKCAT_SYNC', '1')} probe_call={probe_call} schema=8 "
         f"copy_chunk_bytes={chunk_bytes} alloc_extra_bytes={extra_bytes}",
         flush=True,
     )
