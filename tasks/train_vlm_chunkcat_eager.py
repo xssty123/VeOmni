@@ -432,14 +432,16 @@ def _install_fresh_takeover(collectives, param_group):
         and n.value.func.id == "reduce_scatter_comm"
     ]
     returns = [n for n in ast.walk(function) if isinstance(n, ast.Return)]
-    if len(copies) != 1 or len(communications) != 1 or len(returns) != 1:
+    if len(copies) != 1 or len(communications) != 1 or len(returns) != 2:
         raise RuntimeError("Unexpected FSDP copy/communication/return sites")
     if not any(
         k.arg == "input_tensor" and ast.unparse(k.value) == "reduce_scatter_input"
         for k in communications[0].value.keywords
     ):
         raise RuntimeError("Unexpected communication input")
-    if not isinstance(returns[0].value, ast.Tuple) or ast.unparse(returns[0].value.elts[0]) != "reduce_scatter_input":
+    if any(
+        not isinstance(n.value, ast.Tuple) or ast.unparse(n.value.elts[0]) != "reduce_scatter_input" for n in returns
+    ):
         raise RuntimeError("FSDP must return the communication input to retain its lifetime")
 
     class BindInput(ast.NodeTransformer):
