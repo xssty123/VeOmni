@@ -19,6 +19,23 @@ spec.loader.exec_module(module)
 
 
 def check():
+    from veomni.trainer.vlm_trainer import VeOmniVLMArguments
+
+    # Use the real argument class/property without model or device construction.
+    for computed, configured, requested, expected in [(306, 500, 3, 3), (2, 500, 3, 2), (306, 1, 3, 1)]:
+        args = object.__new__(VeOmniVLMArguments)
+        args.train = SimpleNamespace(max_steps=configured, num_train_epochs=2)
+        args._train_steps = computed
+        try:
+            args.train_steps = requested
+        except AttributeError:
+            pass
+        else:
+            raise AssertionError("Regression no longer exercises the read-only train_steps property")
+        module.limit_training_loop(args, requested)
+        assert args.train_steps == expected and args.train.num_train_epochs == 1
+        assert args._train_steps == computed
+
     with tempfile.TemporaryDirectory() as directory:
         observer = module.FSDPObserver(directory)
         sentinel = object()
@@ -80,7 +97,9 @@ def check():
         assert rows[1]["parameter_fqns"] == [params[0]._param_fqn]
         assert rows[1]["reduce_scatter_world_size"] == 1
         assert rows[-1]["completed_optimizer_steps"] == 2
-    print("PASS: CPU values, aliases, return/exception identity, tensor release, update count, per-rank JSON")
+    print(
+        "PASS: real argument loop cap, CPU values, aliases, return/exception identity, tensor release, updates, JSON"
+    )
 
 
 if __name__ == "__main__":

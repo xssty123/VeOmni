@@ -164,6 +164,12 @@ class FSDPObserver:
         optimizer.register_step_post_hook(after_step)
 
 
+def limit_training_loop(args, smoke_steps):
+    # train_steps is a read-only property; its supported cap is train.max_steps.
+    args.train.max_steps = min(args.train_steps, smoke_steps)
+    args.train.num_train_epochs = 1
+
+
 if __name__ == "__main__":
     import torch
     from train_vlm_chunkcat_eager import install_adamw_scalar_diagnostic
@@ -201,8 +207,7 @@ if __name__ == "__main__":
         requested_steps=smoke_steps,
         scheduler_horizon_preserved=True,
     )
-    args.train_steps = min(args.train_steps, smoke_steps)
-    args.train.num_train_epochs = 1
+    limit_training_loop(args, smoke_steps)
     observer.emit("training_enter")
     try:
         trainer.train()
