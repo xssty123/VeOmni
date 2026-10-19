@@ -13,7 +13,9 @@ This first observer maps groups and update boundaries; it does not yet trace
 allocator internals, event waits, or reference release.
 
 Each rank writes a separate JSONL file under `VEOMNI_FSDP_OBSERVE_DIR`, capped
-at 8 MiB with a `trace_limit` marker. There is no per-copy-row output. Parameter
+at 32 MiB with a `trace_limit` marker. The previous 8 MiB cap covered three
+steps (about 5.2 MB per rank); 32 MiB provides headroom for a ten-step follow-up.
+There is no per-copy-row output. Parameter
 names are recorded once per group; `group_id` connects later calls to that list.
 The entry requires a fresh run and creates/verifies AdamW False/False before
 state initialization, using the existing scalar diagnostic helper. The ordinary

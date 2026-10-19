@@ -39,7 +39,7 @@ class FSDPObserver:
         self.updates = 0
         self.groups = {}
         self.bytes_written = 0
-        self.limit = 8 * 1024 * 1024
+        self.limit = 32 * 1024 * 1024
         self.context = contextvars.ContextVar("fsdp_observer", default=None)
 
     def emit(self, event, **details):
