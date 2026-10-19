@@ -1,0 +1,87 @@
+"""Manual CPU-only checks for the private FSDP observation entry point."""
+
+import gc
+import importlib.util
+import json
+import tempfile
+import weakref
+from pathlib import Path
+from types import SimpleNamespace
+
+import torch
+
+
+spec = importlib.util.spec_from_file_location(
+    "fsdp_observe", Path(__file__).resolve().parents[2] / "tasks/train_vlm_fsdp_observe.py"
+)
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+
+
+def check():
+    with tempfile.TemporaryDirectory() as directory:
+        observer = module.FSDPObserver(directory)
+        sentinel = object()
+        failure = RuntimeError("injected original copy failure")
+        fail = False
+        copy_calls = 0
+
+        def allocate():
+            pass
+
+        def copy_in(unsharded_grads, reduce_scatter_input, world_size):
+            nonlocal copy_calls
+            copy_calls += 1
+            if fail:
+                raise failure
+            reduce_scatter_input.copy_(torch.cat([grad.reshape(-1) for grad in unsharded_grads]))
+            return sentinel
+
+        def reduce(fsdp_params, unsharded_grads, reduce_scatter_group, reduce_scatter_comm):
+            output = torch.empty(sum(grad.numel() for grad in unsharded_grads))
+            assert collectives.foreach_reduce_scatter_copy_in(unsharded_grads, output, 1) is sentinel
+            unsharded_grads.clear()
+            return output, sentinel
+
+        collectives = SimpleNamespace(foreach_reduce=reduce, foreach_reduce_scatter_copy_in=copy_in)
+        param_group = SimpleNamespace(foreach_reduce=reduce)
+        observer.install(collectives, param_group)
+        assert collectives.foreach_reduce is param_group.foreach_reduce
+        params = [SimpleNamespace(_param_fqn="model.layers.1.mlp.experts.gate_up_proj")]
+        grads = [torch.arange(12, dtype=torch.bfloat16).reshape(3, 4)]
+        ref = weakref.ref(grads[0])
+        result = param_group.foreach_reduce(params, grads, None, SimpleNamespace(allocate=allocate))
+        torch.testing.assert_close(result[0], torch.arange(12, dtype=torch.float32))
+        assert result[1] is sentinel and grads == [] and copy_calls == 1
+        gc.collect()
+        assert ref() is None, "Observation retained an input tensor after native list clearing"
+        assert observer.context.get() is None
+
+        parameter = torch.nn.Parameter(torch.ones(2))
+        optimizer = torch.optim.AdamW([parameter], foreach=False, fused=False)
+        observer.attach_optimizer(optimizer)
+        for _ in range(2):
+            parameter.grad = torch.ones_like(parameter)
+            optimizer.step()
+        assert observer.updates == 2
+        fail = True
+        try:
+            param_group.foreach_reduce(params, [torch.ones(2)], None, SimpleNamespace(allocate=allocate))
+        except RuntimeError as error:
+            assert error is failure, "Original exception identity changed"
+        else:
+            raise AssertionError("Original failure was swallowed")
+        assert observer.context.get() is None and copy_calls == 2
+        observer.file.close()
+        rows = [json.loads(line) for line in observer.path.read_text().splitlines()]
+        assert sum(row["event"] == "optimizer_return" for row in rows) == 2
+        assert sum(row["event"] == "copy_exception" for row in rows) == 1
+        assert sum(row["event"] == "reduce_exception" for row in rows) == 1
+        assert rows[1]["parameter_fqns"] == [params[0]._param_fqn]
+        assert rows[1]["reduce_scatter_world_size"] == 1
+        assert rows[-1]["completed_optimizer_steps"] == 2
+    print("PASS: CPU values, aliases, return/exception identity, tensor release, update count, per-rank JSON")
+
+
+if __name__ == "__main__":
+    check()

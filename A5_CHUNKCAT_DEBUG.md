@@ -1,5 +1,44 @@
 # Ascend A5 ChunkCat diagnostic branch
 
+## Native FSDP observation baseline
+
+`tasks/train_vlm_fsdp_observe.py` is a separate, opt-in torch 2.10 entry.
+It calls the installed native `foreach_reduce` and copy-in functions unchanged,
+records parameter FQNs in gradient-list order, reduction group size, allocation
+binding, stream representation, input/output metadata, and optimizer entry/return.
+It does **not** install eager packing or fresh takeover, add synchronization,
+or retain tensors/events between calls. Returning from a function is a host
+boundary, **not** proof of device completion. Logging can still affect host timing.
+This first observer maps groups and update boundaries; it does not yet trace
+allocator internals, event waits, or reference release.
+
+Each rank writes a separate JSONL file under `VEOMNI_FSDP_OBSERVE_DIR`, capped
+at 8 MiB with a `trace_limit` marker. There is no per-copy-row output. Parameter
+names are recorded once per group; `group_id` connects later calls to that list.
+The entry requires a fresh run and creates/verifies AdamW False/False before
+state initialization, using the existing scalar diagnostic helper. The ordinary
+training entry and the previous takeover entry remain unchanged.
+
+`VEOMNI_FSDP_OBSERVE_STEPS` defaults to 3. After normal trainer and scheduler
+construction, only the training loop is capped to that many steps in one epoch;
+the already-built LR scheduler keeps the original horizon. `loop_cap` records
+both horizons. `completed_optimizer_steps` counts returned optimizer calls,
+not independently verified finite gradients; also inspect normal loss/grad logs.
+Switching from the takeover diagnostic to this entry rebuilds a **native
+baseline**, and is not a single-variable topology experiment. Keep EP/SP fixed
+for this run before comparing topology changes. Do not compare raw call numbers
+across different parallel layouts.
+
+Manual CPU checks (no training or accelerator computation):
+
+```bash
+python scripts/debug/check_fsdp_observer.py
+```
+
+These check value/return/exception preservation, alias wiring, input tensor
+release, per-rank records, and optimizer counters. They do not validate NPU
+execution or the private FSDP fields on a live model.
+
 This branch starts from upstream `1af5452cfc5db9e16660772e1191d48f15fc450c`.
 The earlier SFT reproduction used `76f32077f42ac496c2dccfb2a35a97c337e1385a`;
 moving to latest main is a separate baseline change, so results are not a
