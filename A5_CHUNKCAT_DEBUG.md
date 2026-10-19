@@ -17,9 +17,14 @@ at 32 MiB with a `trace_limit` marker. The previous 8 MiB cap covered three
 steps (about 5.2 MB per rank); 32 MiB provides headroom for a ten-step follow-up.
 There is no per-copy-row output. Parameter
 names are recorded once per group; `group_id` connects later calls to that list.
-The entry requires a fresh run and creates/verifies AdamW False/False before
-state initialization, using the existing scalar diagnostic helper. The ordinary
-training entry and the previous takeover entry remain unchanged.
+The entry requires a fresh run. `VEOMNI_FSDP_OBSERVE_OPTIMIZER=scalar` (default)
+creates/verifies AdamW False/False using the existing scalar diagnostic helper.
+For a single-variable fused comparison, set it to `native_fused` and set
+`VEOMNI_ADAMW_SCALAR_DIAG=0`: the repository's optimizer factory is left intact,
+and every actual AdamW group must have `foreach=False, fused=True` before the
+training loop. A mismatch aborts rather than silently testing the wrong path.
+Keep reuse, blocking, topology, data, observation and step limit at baseline.
+The ordinary training entry and the previous takeover entry remain unchanged.
 
 `VEOMNI_FSDP_OBSERVE_STEPS` defaults to 3. After normal trainer and scheduler
 construction, only the training loop is capped to that many steps in one epoch;

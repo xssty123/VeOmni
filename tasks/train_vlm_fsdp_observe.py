@@ -146,12 +146,17 @@ class FSDPObserver:
         collectives.foreach_reduce = param_group.foreach_reduce = observe_reduce
         collectives.foreach_reduce_scatter_copy_in = observe_copy
 
-    def attach_optimizer(self, optimizer):
+    def attach_optimizer(self, optimizer, *, expected_fused=False):
+        from torch.optim import AdamW
+
+        if not isinstance(optimizer, AdamW):
+            raise RuntimeError("This comparison requires an actual AdamW optimizer")
         if not optimizer.param_groups or any(
-            group.get("foreach") is not False or group.get("fused") is not False for group in optimizer.param_groups
+            group.get("foreach") is not False or group.get("fused") is not expected_fused
+            for group in optimizer.param_groups
         ):
-            raise RuntimeError("This comparison requires actual AdamW foreach=False, fused=False")
-        self.emit("optimizer_verified", foreach=False, fused=False, groups=len(optimizer.param_groups))
+            raise RuntimeError(f"This comparison requires actual AdamW foreach=False, fused={expected_fused}")
+        self.emit("optimizer_verified", foreach=False, fused=expected_fused, groups=len(optimizer.param_groups))
 
         def before_step(optimizer, args, kwargs):
             self.emit("optimizer_enter", last_reduce_call=self.calls)
@@ -164,6 +169,19 @@ class FSDPObserver:
         optimizer.register_step_post_hook(after_step)
 
 
+def configure_optimizer(optimizer_module, mode):
+    """Preserve the scalar baseline or leave the repository's fused factory intact."""
+    if mode == "scalar":
+        from train_vlm_chunkcat_eager import install_adamw_scalar_diagnostic
+
+        return install_adamw_scalar_diagnostic(optimizer_module)
+    if mode == "native_fused":
+        if os.environ.get("VEOMNI_ADAMW_SCALAR_DIAG", "0") != "0":
+            raise RuntimeError("native_fused requires VEOMNI_ADAMW_SCALAR_DIAG=0")
+        return None
+    raise ValueError("VEOMNI_FSDP_OBSERVE_OPTIMIZER must be scalar or native_fused")
+
+
 def limit_training_loop(args, smoke_steps):
     # train_steps is a read-only property; its supported cap is train.max_steps.
     args.train.max_steps = min(args.train_steps, smoke_steps)
@@ -172,7 +190,6 @@ def limit_training_loop(args, smoke_steps):
 
 if __name__ == "__main__":
     import torch
-    from train_vlm_chunkcat_eager import install_adamw_scalar_diagnostic
 
     from veomni.arguments import parse_args
     from veomni.trainer.vlm_trainer import VeOmniVLMArguments, VLMTrainer
@@ -189,12 +206,13 @@ if __name__ == "__main__":
             raise RuntimeError("Native FSDP bindings required; refusing a prepatched copy/reduce function")
     observer = FSDPObserver(os.environ["VEOMNI_FSDP_OBSERVE_DIR"])
     observer.install(_fsdp_collectives, _fsdp_param_group)
-    verified = install_adamw_scalar_diagnostic(optimizer_module)
+    optimizer_mode = os.environ.get("VEOMNI_FSDP_OBSERVE_OPTIMIZER", "scalar")
+    verified = configure_optimizer(optimizer_module, optimizer_mode)
     args = parse_args(VeOmniVLMArguments)
     trainer = VLMTrainer(args)
-    if len(verified) != 1:
+    if verified is not None and len(verified) != 1:
         raise RuntimeError("This update counter expects exactly one verified AdamW optimizer")
-    observer.attach_optimizer(trainer.base.model.optimizer)
+    observer.attach_optimizer(trainer.base.model.optimizer, expected_fused=optimizer_mode == "native_fused")
     smoke_steps = int(os.environ.get("VEOMNI_FSDP_OBSERVE_STEPS", "3"))
     if smoke_steps < 1 or trainer.base.start_step != 0 or trainer.base.start_epoch != 0:
         raise RuntimeError("This bounded observation requires a fresh run and a positive step limit")

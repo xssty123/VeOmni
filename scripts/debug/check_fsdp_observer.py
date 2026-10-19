@@ -3,10 +3,13 @@
 import gc
 import importlib.util
 import json
+import os
+import sys
 import tempfile
 import weakref
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import torch
 
@@ -18,9 +21,50 @@ module = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(module)
 
 
+def check_optimizer_modes():
+    # Match a direct tasks/*.py invocation so the existing scalar helper resolves.
+    with patch.object(sys, "path", [str(Path(__file__).resolve().parents[2] / "tasks"), *sys.path]):
+        for mode, expected_fused in [("scalar", False), ("native_fused", True)]:
+            factory = SimpleNamespace(AdamW=torch.optim.AdamW)
+            with patch.dict(os.environ, {"VEOMNI_ADAMW_SCALAR_DIAG": "0"}):
+                verified = module.configure_optimizer(factory, mode)
+            if expected_fused:
+                assert verified is None and factory.AdamW is torch.optim.AdamW
+            optimizer = factory.AdamW([torch.nn.Parameter(torch.ones(2))], foreach=False, fused=True)
+            if not expected_fused:
+                assert len(verified) == 1
+            with tempfile.TemporaryDirectory() as directory:
+                observer = module.FSDPObserver(directory)
+                try:
+                    observer.attach_optimizer(optimizer, expected_fused=not expected_fused)
+                except RuntimeError:
+                    pass
+                else:
+                    raise AssertionError("Mismatched actual optimizer flags were accepted")
+                observer.attach_optimizer(optimizer, expected_fused=expected_fused)
+                observer.file.close()
+                row = json.loads(observer.path.read_text())
+                assert row["foreach"] is False and row["fused"] is expected_fused
+                assert not optimizer.state, "Mode verification must not perform an optimizer update"
+        with patch.dict(os.environ, {"VEOMNI_ADAMW_SCALAR_DIAG": "1"}):
+            try:
+                module.configure_optimizer(SimpleNamespace(AdamW=torch.optim.AdamW), "native_fused")
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("Conflicting scalar override was accepted")
+        try:
+            module.configure_optimizer(SimpleNamespace(AdamW=torch.optim.AdamW), "typo")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("Unknown optimizer mode was accepted")
+
+
 def check():
     from veomni.trainer.vlm_trainer import VeOmniVLMArguments
 
+    check_optimizer_modes()
     # Use the real argument class/property without model or device construction.
     for computed, configured, requested, expected in [(306, 500, 3, 3), (2, 500, 3, 2), (306, 1, 3, 1)]:
         args = object.__new__(VeOmniVLMArguments)
