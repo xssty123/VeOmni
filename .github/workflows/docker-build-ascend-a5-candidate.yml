@@ -54,8 +54,8 @@ jobs:
           SOURCE_COMMIT=$(git -C .candidate-source rev-parse HEAD)
           test "$SOURCE_COMMIT" = "$VEOMNI_SOURCE_COMMIT"
           echo "commit=$SOURCE_COMMIT" >> "$GITHUB_OUTPUT"
-          mkdir -p .candidate-source/docker/ascend/tests
-          cp docker/ascend/tests/a5_image_smoke.py .candidate-source/docker/ascend/tests/
+          test -f .candidate-source/veomni/ops/kernels/gated_delta_rule/chunk_gated_delta_rule/standard/fla_npu.py
+          grep -Fq "git checkout --detach $FLA_COMMIT" docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5
           # Preserve the proven ARM TorchCodec installation procedure from this branch.
           cp docs/get_started/installation/install_torchcodec_Ascend.sh \
             .candidate-source/docs/get_started/installation/install_torchcodec_Ascend.sh
@@ -114,9 +114,6 @@ jobs:
           build-args: |
             BUILDKIT_INLINE_CACHE=1
             PIP_INDEX=https://pypi.org/simple
-            VEOMNI_SOURCE_COMMIT=${{ env.VEOMNI_SOURCE_COMMIT }}
-            DOCKER_SOURCE_COMMIT=${{ github.sha }}
-            FLA_COMMIT=${{ env.FLA_COMMIT }}
 
   validate-candidate:
     needs: build-candidate
@@ -128,6 +125,11 @@ jobs:
     env:
       IMAGE_DIGEST: ${{ needs.build-candidate.outputs.digest }}
     steps:
+      - name: Checkout smoke script
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
       - name: Login to candidate GHCR
         uses: docker/login-action@v3
         with:
@@ -142,13 +144,17 @@ jobs:
           mkdir -p reports
           test -n "$IMAGE_DIGEST"
           docker pull "$IMAGE@$IMAGE_DIGEST"
+          docker image inspect "$IMAGE@$IMAGE_DIGEST" > reports/a5-image-inspect.json
           docker run --name a5-candidate-smoke --entrypoint /bin/bash \
+            --mount "type=bind,src=$PWD/docker/ascend/tests/a5_image_smoke.py,dst=/tmp/a5_image_smoke.py,readonly" \
+            --mount "type=bind,src=$PWD/reports/a5-image-inspect.json,dst=/tmp/a5-image-inspect.json,readonly" \
             -e DOCKER_SOURCE_COMMIT="$GITHUB_SHA" \
             -e TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
             "$IMAGE@$IMAGE_DIGEST" -c '
               set -eo pipefail
               source /usr/local/Ascend/ascend-toolkit/set_env.sh
-              python /opt/veomni-image/a5_image_smoke.py \
+              python /tmp/a5_image_smoke.py \
+                --image-inspect /tmp/a5-image-inspect.json \
                 --expected-docker-commit "$DOCKER_SOURCE_COMMIT" \
                 --output /tmp/a5-smoke.json
             ' 2>&1 | tee reports/a5-smoke.log
@@ -159,9 +165,8 @@ jobs:
         run: |
           mkdir -p reports
           if docker inspect a5-candidate-smoke >/dev/null 2>&1; then
-            for file in /tmp/a5-smoke.json /app/a5-build-info.json \
-              /app/a5-image-requirements.txt /app/a5-ci-wheels.sha256 \
-              /app/a5-pip-check.txt /app/a5-pip-check.exit-code; do
+            for file in /tmp/a5-smoke.json \
+              /app/a5-image-requirements.txt /app/a5-ci-wheels.sha256; do
               docker cp "a5-candidate-smoke:$file" reports/ || true
             done
             docker rm a5-candidate-smoke

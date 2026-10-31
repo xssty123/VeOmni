@@ -12,7 +12,7 @@ Scope: A5 ARM64 Dockerfile and manual private-fork build workflow only.
   Docker or UT/ST commits. The fixed PR build source and dependency pins stay unchanged.
 - Known-good Docker build: `2d66d74c9f3b05a95d44af1ac0a3f2af02b7e26d`,
   [Actions run 35588936993](https://github.com/xssty123/VeOmni/actions/runs/35588936993).
-  The old A5 Dockerfile and workflow are identical at these two commits.
+  The old A5 Dockerfile and workflow match the original draft base at `c5bf89b0`.
 - Known-good image: `ghcr.io/xssty123/veomni-a5:a5-cann9.2.0-beta.2-torch_npu2.10.0.post6-2d66d74c9f3b-35588936993-1`.
 - Recorded baseline digest: `sha256:6655d18e4a6cc2f0ee27f76344803b8fb1c9a60b10e939c11753ae5c6c47fcbd`.
   This is historical build evidence, not acceptance of the new stack.
@@ -38,6 +38,20 @@ source; there is no extra independent dependency upgrade. Existing Dockerfiles,
 build/publish workflows, UT/ST workflows, pyproject.toml, uv.lock and model/kernel
 code are unchanged.
 
+## Simplification contract (2026-10-31)
+
+Starting draft: `546a312b1074faac853f88e13370061bead0755d`; the known-good
+historical build above remains the validation baseline. Follow the historical
+Dockerfile's section order and direct installation style.
+
+Allowed changes: remove candidate commit arguments and source gating from the
+Dockerfile; pin FLA directly in its installation block; move candidate provenance
+and full smoke execution to the workflow's fresh-container validation. Keep
+simple final version assertions, package freeze, wheel checksums, and the upstream
+FLA build/API checks. Adapt only this candidate workflow, smoke script and document
+to the new locations. Preserve all dependency versions, base digest, installation
+commands/order, workarounds, fixed PR source, UT/ST and other workflows.
+
 ## Implementation and validation sequence
 
 1. Add the versioned Dockerfile, stable-API image smoke script, and candidate workflow.
@@ -52,7 +66,7 @@ code are unchanged.
 
 Use `.github/workflows/docker-build-ascend-a5-candidate.yml`. It checks out this
 Docker branch and the fixed upstream PR source separately. It stages only the
-new smoke script and the historical TorchCodec installer into the PR context;
+historical TorchCodec installer into the PR context;
 the new Dockerfile stays on the Docker branch. This avoids installing new FLA
 against the old coverage branch's legacy GDN adapter. Both commit identities are
 recorded. No floating PR head, `main`, or FLA branch is used for the build.
@@ -67,7 +81,12 @@ fork's default branch before GitHub can offer manual dispatch.
 
 Retained under `/app`: TorchNPU/Triton/Triton-Ascend/FLA A5 wheels,
 `torchcodec/` source and installer, `a5-image-requirements.txt`,
-`a5-ci-wheels.sha256`, `a5-build-info.json`, and `a5-pip-check.txt`.
+`a5-ci-wheels.sha256`, and the upstream `check_packaged_wheel_api.py`.
+The workflow records source commits as image labels and saves `docker image inspect`
+output. The fresh-container job mounts the smoke script and inspection JSON read-only;
+the smoke report includes source identities and `pip check` output/exit status.
+The Dockerfile has no dependency on the candidate workflow's smoke script or commit
+arguments and keeps only inline build/API/version checks.
 FLA distribution: `flash-linear-attention-npu-a5`; Python import: `fla_npu`.
 Do not require a literal `26.10.0` version string: the selected source declares
 `26.10.0.dev0`, and the build may add a local version suffix. The commit and
@@ -94,7 +113,7 @@ and run `git diff --check`. That historical A5 file is absent from upstream main
 Expected tracked scope: this document, the new versioned Dockerfile,
 `docker/ascend/tests/a5_image_smoke.py`, and the new candidate workflow only.
 
-Local checks on 2026-10-31: actionlint 1.7.12 (shellcheck/pyflakes unavailable),
+Initial draft checks on 2026-10-31 (before simplification): actionlint 1.7.12 (shellcheck/pyflakes unavailable),
 YAML parse, `bash -n` for all six workflow shell blocks and 22 Docker RUN blocks,
 embedded Python syntax, smoke-script Ruff lint/format, and new-file whitespace
 checks passed. A wrong-platform invocation failed and wrote a failure report as
@@ -103,3 +122,10 @@ Docker is unavailable on this execution host, so no image build or runtime
 import check was performed. TorchCodec's v0.10.0 source declares 0.10.0a0 and
 appends a Git suffix; the smoke checks that source-build version, not a release
 wheel's literal 0.10.0 metadata.
+
+Simplified draft checks on 2026-10-31: repository-pinned Ruff 0.13.2
+`make quality`, smoke lint/format, actionlint 1.7.12, YAML parse, all six workflow
+shell blocks, 19 Docker RUN blocks, embedded Python syntax, and whitespace checks
+passed. A CPU-only check confirmed rejection of mismatched Docker commit labels.
+Dependency pins and the FLA source commit are unchanged. No Docker build or NPU
+validation has been run.

@@ -29,15 +29,21 @@ EXPECTED_VERSIONS = {
 }
 
 
-def check_image(report, expected_docker_commit):
+def check_image(report, image_inspect, expected_docker_commit):
     if platform.machine() != "aarch64" or sys.version_info[:3] != (3, 12, 16):
         raise RuntimeError("Expected A5 ARM64 image with Python 3.12.16")
-    info = json.loads(Path("/app/a5-build-info.json").read_text())
+    image = json.loads(image_inspect.read_text())[0]
+    labels = image["Config"]["Labels"]
+    info = {
+        "veomni_commit": labels["org.opencontainers.image.revision"],
+        "docker_commit": labels["ai.veomni.docker-revision"],
+        "fla_commit": labels["ai.veomni.fla-revision"],
+        "image_id": image["Id"],
+        "repo_digests": image["RepoDigests"],
+    }
     report["build"] = info
     if info["veomni_commit"] != VEOMNI_COMMIT or info["fla_commit"] != FLA_COMMIT:
         raise RuntimeError("Source commits differ from the PR #1369 candidate")
-    if info["soc"] != "ascend950":
-        raise RuntimeError("Expected ascend950 FLA build")
     if expected_docker_commit and info["docker_commit"] != expected_docker_commit:
         raise RuntimeError("Image was built from another Docker commit")
 
@@ -58,7 +64,7 @@ def check_image(report, expected_docker_commit):
     report["wheel_checksums"] = "passed"
     # This upstream check runs in a fresh interpreter and must not auto-import torch_npu.
     subprocess.run(
-        [sys.executable, "/opt/veomni-image/check_packaged_wheel_api.py"],
+        [sys.executable, "/app/check_packaged_wheel_api.py"],
         check=True,
         env={**os.environ, "TORCH_DEVICE_BACKEND_AUTOLOAD": "0"},
     )
@@ -102,11 +108,12 @@ def check_image(report, expected_docker_commit):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--expected-docker-commit")
+    parser.add_argument("--image-inspect", type=Path, required=True)
+    parser.add_argument("--expected-docker-commit", required=True)
     args = parser.parse_args()
     report = {"status": "failed", "python": sys.version, "architecture": platform.machine(), "npu_executed": False}
     try:
-        check_image(report, args.expected_docker_commit)
+        check_image(report, args.image_inspect, args.expected_docker_commit)
         report["status"] = "passed"
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
