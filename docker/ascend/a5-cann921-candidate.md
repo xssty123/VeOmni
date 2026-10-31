@@ -1,6 +1,6 @@
 # A5 CANN 9.2.1 candidate
 
-Status: local draft; no build, registry push, or NPU validation has been run.
+Status: candidate builds attempted; no successful CANN 9.2.1 image or NPU validation yet.
 Scope: A5 ARM64 Dockerfile and manual private-fork build workflow only.
 
 ## Allowed-diff contract
@@ -143,3 +143,21 @@ shell blocks, 19 Docker RUN blocks, embedded Python syntax, and whitespace check
 passed. A CPU-only check confirmed rejection of mismatched Docker commit labels.
 Dependency pins and the FLA source commit are unchanged. No Docker build or NPU
 validation has been run.
+
+## Build diagnostics contract (2026-10-31)
+
+Starting commit: `9ef93a25fc12ceef5f4c77df089316670fdce4a0`.
+Failed run: https://github.com/xssty123/VeOmni/actions/runs/41187015122.
+The historical known-good build remains `2d66d74c` / run `35588936993`.
+
+Allowed changes: enable pip verbose output only for the FLA wheel build; add
+30-second runner resource snapshots around the build action and upload them
+with available kernel messages even if the build fails. No version, compiler
+parallelism, operator selection, installation order, wheel retention, UT/ST,
+registry destination or default-branch workflow changes.
+
+Detailed compiler output goes to the existing build action log. Runner snapshots
+include time, memory/swap, disk, highest-RSS processes, memory pressure/cgroup
+counters and Docker container usage. These observations add diagnostics only;
+the prior failure has not been established as OOM or a compiler error. Artifacts
+can only be uploaded if the runner remains available to execute cleanup steps.

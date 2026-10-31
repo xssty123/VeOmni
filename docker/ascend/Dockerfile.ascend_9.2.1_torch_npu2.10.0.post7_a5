@@ -92,7 +92,7 @@ RUN git clone https://github.com/flashserve/flash-linear-attention-npu /tmp/fla-
     source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     python -m pip install -r requirements.txt && \
     FLA_NPU_SOC=ascend950 python scripts/check_npu_env.py --build-only && \
-    FLA_NPU_SOC=ascend950 python scripts/build_wheel.py && \
+    PIP_VERBOSE=1 FLA_NPU_SOC=ascend950 python scripts/build_wheel.py && \
     python -m pip uninstall -y fla-npu flash-linear-attention-npu flash-linear-attention-npu-a5 && \
     python -m pip install --force-reinstall --no-deps dist/flash_linear_attention_npu_a5-*.whl && \
     TORCH_DEVICE_BACKEND_AUTOLOAD=0 python -c "from fla_npu.ops import ascendc; assert all(callable(getattr(ascendc, n, None)) for n in ('chunk_gated_delta_rule_fwd', 'chunk_gated_delta_rule_bwd'))" && \

@@ -61,6 +61,28 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Start build resource logging
+        shell: bash
+        run: |
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/a5-build-started-at"
+          nohup bash -c '
+            while true; do
+              date -u +"%Y-%m-%dT%H:%M:%SZ"
+              free -h
+              df -h / /var/lib/docker
+              ps -eo pid,ppid,comm,%cpu,%mem,rss --sort=-rss | sed -n "1,26p"
+              for file in /proc/pressure/memory /sys/fs/cgroup/memory.events; do
+                if [ -r "$file" ]; then
+                  echo "$file"
+                  cat "$file"
+                fi
+              done
+              timeout 10s docker stats --no-stream --format "{{.Name}} CPU={{.CPUPerc}} MEM={{.MemUsage}} PIDS={{.PIDs}}"
+              sleep 30
+            done
+          ' > "$RUNNER_TEMP/a5-build-resources.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/a5-build-resources.pid"
+
       - name: Build and push candidate
         id: build
         uses: docker/build-push-action@v6
@@ -80,6 +102,33 @@ jobs:
           build-args: |
             BUILDKIT_INLINE_CACHE=1
             PIP_INDEX=https://pypi.org/simple
+
+      - name: Collect build diagnostics
+        if: always()
+        shell: bash
+        run: |
+          if [ -f "$RUNNER_TEMP/a5-build-resources.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/a5-build-resources.pid")" 2>/dev/null || true
+          fi
+          mkdir -p "$RUNNER_TEMP/a5-build-diagnostics"
+          if [ -f "$RUNNER_TEMP/a5-build-resources.log" ]; then
+            cp "$RUNNER_TEMP/a5-build-resources.log" "$RUNNER_TEMP/a5-build-diagnostics/"
+            tail -n 80 "$RUNNER_TEMP/a5-build-resources.log"
+          fi
+          if [ -f "$RUNNER_TEMP/a5-build-started-at" ]; then
+            sudo journalctl -k --since "$(cat "$RUNNER_TEMP/a5-build-started-at")" --no-pager \
+              > "$RUNNER_TEMP/a5-build-diagnostics/kernel.log" 2>&1 || true
+          fi
+          free -h > "$RUNNER_TEMP/a5-build-diagnostics/final-memory.txt" 2>&1 || true
+          df -h > "$RUNNER_TEMP/a5-build-diagnostics/final-disk.txt" 2>&1 || true
+
+      - name: Upload build diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a5-build-diagnostics
+          path: ${{ runner.temp }}/a5-build-diagnostics/
+          if-no-files-found: warn
 
   validate-candidate:
     needs: build-candidate
