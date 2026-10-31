@@ -44,24 +44,6 @@ jobs:
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           grep -Fq "git checkout --detach $FLA_COMMIT" docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5
 
-      - name: Check candidate package visibility
-        uses: actions/github-script@v7
-        with:
-          script: |
-            try {
-              const { data } = await github.rest.packages.getPackageForUser({
-                username: 'xssty123',
-                package_type: 'container',
-                package_name: 'veomni-ascend-candidate',
-              });
-              if (data.visibility !== 'private') {
-                core.setFailed(`Expected private package, found ${data.visibility}`);
-              }
-            } catch (error) {
-              if (error.status !== 404) throw error;
-              core.info('No accessible package; new GHCR packages default to private.');
-            }
-
       - name: Compute unique candidate tag
         id: image
         shell: bash
