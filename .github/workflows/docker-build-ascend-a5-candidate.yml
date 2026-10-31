@@ -1,0 +1,243 @@
+name: docker-build-ascend-a5-candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  IMAGE: ghcr.io/xssty123/veomni-ascend-candidate
+  FLA_COMMIT: a7c608f2e3f828779ceeec1fcf155a6e37ede83c
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-candidate:
+    if: github.repository == 'xssty123/VeOmni'
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 360
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      tag: ${{ steps.image.outputs.tag }}
+      digest: ${{ steps.build.outputs.digest }}
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+
+      - name: Checkout Docker candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check build source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          grep -Fq "git checkout --detach $FLA_COMMIT" docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5
+
+      - name: Check candidate package visibility
+        uses: actions/github-script@v7
+        with:
+          script: |
+            try {
+              const { data } = await github.rest.packages.getPackageForUser({
+                username: 'xssty123',
+                package_type: 'container',
+                package_name: 'veomni-ascend-candidate',
+              });
+              if (data.visibility !== 'private') {
+                core.setFailed(`Expected private package, found ${data.visibility}`);
+              }
+            } catch (error) {
+              if (error.status !== 404) throw error;
+              core.info('No accessible package; new GHCR packages default to private.');
+            }
+
+      - name: Compute unique candidate tag
+        id: image
+        shell: bash
+        run: |
+          TAG="a5-cann9.2.1-torch_npu2.10.0.post7-${GITHUB_SHA::12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          echo "tag=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Login to candidate GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push candidate
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5
+          platforms: linux/arm64
+          push: true
+          tags: ${{ steps.image.outputs.tag }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/xssty123/VeOmni
+            org.opencontainers.image.revision=${{ github.sha }}
+            ai.veomni.docker-revision=${{ github.sha }}
+            ai.veomni.fla-revision=${{ env.FLA_COMMIT }}
+          cache-from: type=gha,scope=ascend-a5-cann921
+          cache-to: type=gha,scope=ascend-a5-cann921,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            PIP_INDEX=https://pypi.org/simple
+
+  validate-candidate:
+    needs: build-candidate
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 60
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE_DIGEST: ${{ needs.build-candidate.outputs.digest }}
+    steps:
+      - name: Checkout smoke script
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Login to candidate GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Check exact digest in a fresh container
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p reports
+          test -n "$IMAGE_DIGEST"
+          docker pull "$IMAGE@$IMAGE_DIGEST"
+          docker image inspect "$IMAGE@$IMAGE_DIGEST" > reports/a5-image-inspect.json
+          docker run --name a5-candidate-smoke --entrypoint /bin/bash \
+            --mount "type=bind,src=$PWD/docker/ascend/tests/a5_image_smoke.py,dst=/tmp/a5_image_smoke.py,readonly" \
+            --mount "type=bind,src=$PWD/reports/a5-image-inspect.json,dst=/tmp/a5-image-inspect.json,readonly" \
+            -e DOCKER_SOURCE_COMMIT="$GITHUB_SHA" \
+            -e TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
+            "$IMAGE@$IMAGE_DIGEST" -c '
+              set -eo pipefail
+              source /usr/local/Ascend/ascend-toolkit/set_env.sh
+              python /tmp/a5_image_smoke.py \
+                --image-inspect /tmp/a5-image-inspect.json \
+                --expected-docker-commit "$DOCKER_SOURCE_COMMIT" \
+                --output /tmp/a5-smoke.json
+            ' 2>&1 | tee reports/a5-smoke.log
+
+      - name: Collect image evidence
+        if: always()
+        shell: bash
+        run: |
+          mkdir -p reports
+          if docker inspect a5-candidate-smoke >/dev/null 2>&1; then
+            for file in /tmp/a5-smoke.json \
+              /app/a5-image-requirements.txt /app/a5-ci-wheels.sha256; do
+              docker cp "a5-candidate-smoke:$file" reports/ || true
+            done
+            docker rm a5-candidate-smoke
+          fi
+
+      - name: Upload smoke evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a5-candidate-smoke
+          path: reports/
+          if-no-files-found: error
+
+  record-result:
+    if: always() && github.repository == 'xssty123/VeOmni'
+    needs: [build-candidate, validate-candidate]
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      IMAGE_TAG: ${{ needs.build-candidate.outputs.tag }}
+      IMAGE_DIGEST: ${{ needs.build-candidate.outputs.digest }}
+      BUILD_RESULT: ${{ needs.build-candidate.result }}
+      SMOKE_RESULT: ${{ needs.validate-candidate.result }}
+    steps:
+      - name: Download available smoke evidence
+        uses: actions/download-artifact@v4
+        continue-on-error: true
+        with:
+          name: a5-candidate-smoke
+          path: reports
+
+      - name: Record candidate result
+        shell: bash
+        run: |
+          mkdir -p reports
+          python3 - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          env = os.environ
+          smoke_file = Path('reports/a5-smoke.json')
+          smoke = json.loads(smoke_file.read_text()) if smoke_file.exists() else None
+          passed = env['BUILD_RESULT'] == env['SMOKE_RESULT'] == 'success'
+          passed = passed and smoke is not None and smoke.get('status') == 'passed'
+          result = {
+              'commit': env['GITHUB_SHA'],
+              'veomni_commit': env['GITHUB_SHA'],
+              'fla_commit': env['FLA_COMMIT'],
+              'run_url': f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}",
+              'target': 'a5-arm64',
+              'platform': 'linux/arm64',
+              'dockerfile': 'docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5',
+              'image': env['IMAGE'],
+              'tag': env['IMAGE_TAG'],
+              'digest': env['IMAGE_DIGEST'],
+              'build_result': env['BUILD_RESULT'],
+              'smoke_result': env['SMOKE_RESULT'],
+              'packaging_smoke_passed': passed,
+              'dependency_consistent': smoke.get('dependency_consistent') if smoke else None,
+              'npu_ut_st': 'not_run',
+              'smoke': smoke,
+          }
+          Path('reports/ascend-candidate-result.json').write_text(json.dumps(result, indent=2) + '\n')
+          with open(env['GITHUB_STEP_SUMMARY'], 'a') as summary:
+              summary.write('### A5 CANN 9.2.1 candidate\n\n')
+              summary.write(f"Image: `{env['IMAGE']}@{env['IMAGE_DIGEST']}`\n\n")
+              summary.write(f"Build: {env['BUILD_RESULT']}; packaging smoke: {passed}\n\n")
+              summary.write(f"Dependency consistency: {result['dependency_consistent']}\n\n")
+              summary.write('NPU UT/ST: not run. This is not a hardware acceptance result.\n')
+          PY
+
+      - name: Upload candidate record
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a5-candidate-result
+          path: reports/
+          if-no-files-found: error
+
+      - name: Require complete smoke evidence
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+          result = json.loads(Path('reports/ascend-candidate-result.json').read_text())
+          if not result['packaging_smoke_passed']:
+              raise SystemExit('Candidate build/smoke failed or evidence is incomplete')
+          PY
