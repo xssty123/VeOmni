@@ -20,7 +20,7 @@ Scope: A5 ARM64 Dockerfile and manual private-fork build workflow only.
 
 | Change | Previous | Candidate |
 | --- | --- | --- |
-| Base | CANN 9.2.0-beta.2 / Ubuntu 22.04 / Python 3.12 | CANN 9.2.1 / Ubuntu 22.04 / Python 3.12.16; ARM64 manifest pinned |
+| Base | CANN 9.2.0-beta.2 / Ubuntu 22.04 / Python 3.12 | CANN 9.2.1 / Ubuntu 22.04 / Python 3.12.16; versioned image tag |
 | VeOmni source | build context from old coverage branch | PR #1369 head `0ec0d8829a85fa82abcf545857517d01542e703c` |
 | torch-npu | 2.10.0.post6 | 2.10.0.post7 |
 | Triton / Triton-Ascend | 3.5.0 / 3.2.2 | 3.6.0 / 3.6.0 (not post2) |
@@ -49,8 +49,11 @@ Dockerfile; pin FLA directly in its installation block; move candidate provenanc
 and full smoke execution to the workflow's fresh-container validation. Keep
 simple final version assertions, package freeze, wheel checksums, and the upstream
 FLA build/API checks. Adapt only this candidate workflow, smoke script and document
-to the new locations. Preserve all dependency versions, base digest, installation
+to the new locations. Preserve all dependency versions, installation
 commands/order, workarounds, fixed PR source, UT/ST and other workflows.
+The subsequent user-requested cleanup starts from `bbf9f245`: remove the two
+header comments about PR provenance and validation status, and use the CANN
+version tag without a base-image digest. All other Dockerfile content stays unchanged.
 
 ## Implementation and validation sequence
 

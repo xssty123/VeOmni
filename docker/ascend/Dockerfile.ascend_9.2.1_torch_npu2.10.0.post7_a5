@@ -1,8 +1,6 @@
 # A5 / ARM64, CANN 9.2.1, Ubuntu 22.04 and shared Python 3.12.
 # torch-npu source: https://ascend.devcloud.huaweicloud.com/pypi/simple/torch-npu/
-# FLA source pinned to the commit documented by PR #1369.
-# This Dockerfile has not yet been built or validated on A5.
-FROM quay.io/ascend/cann:9.2.1-950-ubuntu22.04-py3.12@sha256:1d53d20816e10c3fa292041cd503446145263115bcda428d8559f7b74e23dd36
+FROM quay.io/ascend/cann:9.2.1-950-ubuntu22.04-py3.12
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 USER root
