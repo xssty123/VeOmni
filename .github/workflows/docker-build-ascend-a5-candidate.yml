@@ -8,7 +8,6 @@ permissions:
 
 env:
   IMAGE: ghcr.io/xssty123/veomni-ascend-candidate
-  VEOMNI_SOURCE_COMMIT: 0ec0d8829a85fa82abcf545857517d01542e703c
   FLA_COMMIT: a7c608f2e3f828779ceeec1fcf155a6e37ede83c
 
 concurrency:
@@ -26,7 +25,6 @@ jobs:
     outputs:
       tag: ${{ steps.image.outputs.tag }}
       digest: ${{ steps.build.outputs.digest }}
-      source_commit: ${{ steps.source.outputs.commit }}
     steps:
       - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.1
@@ -36,29 +34,15 @@ jobs:
       - name: Checkout Docker candidate
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
-      - name: Checkout fixed PR 1369 source
-        uses: actions/checkout@v4
-        with:
-          repository: ByteDance-Seed/VeOmni
-          ref: ${{ env.VEOMNI_SOURCE_COMMIT }}
-          path: .candidate-source
-          persist-credentials: false
-
-      - name: Prepare PR build context
-        id: source
+      - name: Check build source
         shell: bash
         run: |
           set -euo pipefail
-          SOURCE_COMMIT=$(git -C .candidate-source rev-parse HEAD)
-          test "$SOURCE_COMMIT" = "$VEOMNI_SOURCE_COMMIT"
-          echo "commit=$SOURCE_COMMIT" >> "$GITHUB_OUTPUT"
-          test -f .candidate-source/veomni/ops/kernels/gated_delta_rule/chunk_gated_delta_rule/standard/fla_npu.py
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
           grep -Fq "git checkout --detach $FLA_COMMIT" docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5
-          # Preserve the proven ARM TorchCodec installation procedure from this branch.
-          cp docs/get_started/installation/install_torchcodec_Ascend.sh \
-            .candidate-source/docs/get_started/installation/install_torchcodec_Ascend.sh
 
       - name: Check candidate package visibility
         uses: actions/github-script@v7
@@ -99,14 +83,14 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
-          context: ./.candidate-source
+          context: .
           file: ./docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5
           platforms: linux/arm64
           push: true
           tags: ${{ steps.image.outputs.tag }}
           labels: |
             org.opencontainers.image.source=https://github.com/xssty123/VeOmni
-            org.opencontainers.image.revision=${{ env.VEOMNI_SOURCE_COMMIT }}
+            org.opencontainers.image.revision=${{ github.sha }}
             ai.veomni.docker-revision=${{ github.sha }}
             ai.veomni.fla-revision=${{ env.FLA_COMMIT }}
           cache-from: type=gha,scope=ascend-a5-cann921
@@ -128,6 +112,7 @@ jobs:
       - name: Checkout smoke script
         uses: actions/checkout@v4
         with:
+          ref: ${{ github.sha }}
           persist-credentials: false
 
       - name: Login to candidate GHCR
@@ -214,7 +199,7 @@ jobs:
           passed = passed and smoke is not None and smoke.get('status') == 'passed'
           result = {
               'commit': env['GITHUB_SHA'],
-              'veomni_commit': env['VEOMNI_SOURCE_COMMIT'],
+              'veomni_commit': env['GITHUB_SHA'],
               'fla_commit': env['FLA_COMMIT'],
               'run_url': f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}",
               'target': 'a5-arm64',

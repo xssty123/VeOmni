@@ -1,4 +1,4 @@
-# A5 CANN 9.2.1 candidate for VeOmni #1369
+# A5 CANN 9.2.1 candidate
 
 Status: local draft; no build, registry push, or NPU validation has been run.
 Scope: A5 ARM64 Dockerfile and manual private-fork build workflow only.
@@ -9,7 +9,7 @@ Scope: A5 ARM64 Dockerfile and manual private-fork build workflow only.
 - Migration target: `codex/a5-cann921-main`, based on upstream `main`
   `f1534a207cdc2d050dcefd5cee24fdbf70a22831`, fetched on 2026-10-31.
   Cherry-pick only these four candidate files; do not carry over historical
-  Docker or UT/ST commits. The fixed PR build source and dependency pins stay unchanged.
+  Docker or UT/ST commits. Dependency pins stay unchanged; the build source now follows the selected branch.
 - Known-good Docker build: `2d66d74c9f3b05a95d44af1ac0a3f2af02b7e26d`,
   [Actions run 35588936993](https://github.com/xssty123/VeOmni/actions/runs/35588936993).
   The old A5 Dockerfile and workflow match the original draft base at `c5bf89b0`.
@@ -21,10 +21,10 @@ Scope: A5 ARM64 Dockerfile and manual private-fork build workflow only.
 | Change | Previous | Candidate |
 | --- | --- | --- |
 | Base | CANN 9.2.0-beta.2 / Ubuntu 22.04 / Python 3.12 | CANN 9.2.1 / Ubuntu 22.04 / Python 3.12.16; versioned image tag |
-| VeOmni source | build context from old coverage branch | PR #1369 head `0ec0d8829a85fa82abcf545857517d01542e703c` |
+| VeOmni source | build context from old coverage branch | workflow-selected branch at `github.sha` |
 | torch-npu | 2.10.0.post6 | 2.10.0.post7 |
 | Triton / Triton-Ascend | 3.5.0 / 3.2.2 | 3.6.0 / 3.6.0 (not post2) |
-| Transformers | 5.9.0 | 5.16.1, matching PR source |
+| Transformers | 5.9.0 | 5.16.1 |
 | FLA source | `cf1947bff0e75522f9cc0bba5814e6705dc80aae` | `a7c608f2e3f828779ceeec1fcf155a6e37ede83c` |
 | FLA build/check | legacy dispatcher API, untiered wheel | `ascend950`, tiered A5 wheel, stable GDN forward/backward API |
 | Artifact provenance | freeze + wheel checksums | retain those, add source/base provenance and dependency-check report |
@@ -33,7 +33,7 @@ Scope: A5 ARM64 Dockerfile and manual private-fork build workflow only.
 Preserved: Torch 2.10.0, TorchCodec v0.10.0 and the baseline ARM installer,
 uv 0.11.16, PyArrow 21.0.0, pandas 2.3.2, Ubuntu package list, mirror override,
 thread limits, community-Triton-before-Ascend installation order, and `--no-deps`
-for replacement wheels. Dependencies supplied by VeOmni follow the fixed PR
+for replacement wheels. Dependencies supplied by VeOmni follow the selected branch
 source; there is no extra independent dependency upgrade. Existing Dockerfiles,
 build/publish workflows, UT/ST workflows, pyproject.toml, uv.lock and model/kernel
 code are unchanged.
@@ -50,29 +50,38 @@ and full smoke execution to the workflow's fresh-container validation. Keep
 simple final version assertions, package freeze, wheel checksums, and the upstream
 FLA build/API checks. Adapt only this candidate workflow, smoke script and document
 to the new locations. Preserve all dependency versions, installation
-commands/order, workarounds, fixed PR source, UT/ST and other workflows.
+commands/order, workarounds, UT/ST and other workflows.
 The subsequent user-requested cleanup starts from `bbf9f245`: remove the two
 header comments about PR provenance and validation status, and use the CANN
 version tag without a base-image digest. All other Dockerfile content stays unchanged.
+
+## Current-branch build contract (2026-10-31)
+
+Starting point: `6da5cc24`; the historical successful Docker build above remains
+the validation baseline. Build the workflow-selected branch at `github.sha`.
+Remove the separate PR checkout, staging directory and PR-specific source/API
+checks. Record the selected branch commit as both the VeOmni and Docker revision.
+Keep FLA at `a7c608f2e3f828779ceeec1fcf155a6e37ede83c`, all dependency versions,
+installation order, retained wheels, generic package/import checks and UT/ST unchanged.
+PR #1369 is integrated through upstream's own merge process, not by this workflow.
 
 ## Implementation and validation sequence
 
 1. Add the versioned Dockerfile, stable-API image smoke script, and candidate workflow.
 2. Check Python/shell/YAML/workflow syntax and the diff against the allowed scope.
 3. After separate build authorization, run the manual workflow in the private fork.
-4. Run A3/A5 UT/ST separately after integrating #1369. A hosted ARM smoke does
+4. Run A3/A5 UT/ST separately against the selected branch. A hosted ARM smoke does
    not execute NPU kernels or validate numerics, device communication, or training.
 5. Freeze the successful commit, source commit, tag, digest, reports and runtime
    results as the next baseline. Quay promotion is outside this workflow.
 
 ## Build context and outputs
 
-Use `.github/workflows/docker-build-ascend-a5-candidate.yml`. It checks out this
-Docker branch and the fixed upstream PR source separately. It stages only the
-historical TorchCodec installer into the PR context;
-the new Dockerfile stays on the Docker branch. This avoids installing new FLA
-against the old coverage branch's legacy GDN adapter. Both commit identities are
-recorded. No floating PR head, `main`, or FLA branch is used for the build.
+Use `.github/workflows/docker-build-ascend-a5-candidate.yml`. It checks out the
+selected branch at `github.sha` and uses `context: .`. The Dockerfile, VeOmni source,
+and TorchCodec installer come from that same checkout. There is no separate PR
+checkout or source staging. Both revision labels record the workflow commit;
+FLA alone stays fixed to its selected dependency commit.
 
 The candidate is pushed only to `ghcr.io/xssty123/veomni-ascend-candidate` under
 a unique A5 tag. A second ARM runner pulls that exact digest into a fresh
@@ -102,8 +111,10 @@ wheel checksum are the identity.
   Keep the existing no-deps overlay policy for this draft; record `pip check`
   output and exit status rather than claiming dependency consistency. This
   report is informational, while version/API/library smoke failures are fatal.
-- The PR source declares torch-npu 2.10.0; the selected post7 wheel is installed
+- The current branch declares torch-npu 2.10.0; the selected post7 wheel is installed
   afterward. Any resulting metadata inconsistency is recorded, not hidden.
+- Package/import smoke does not assert PR-specific VeOmni GDN calls or prove
+  model/operator compatibility; that requires the selected branch's UT/ST.
 - No other transitive or build-tool versions are newly frozen in this draft.
 - Old UT/ST scripts still match the untiered FLA wheel and legacy API. They
   cannot be used unchanged to accept this candidate. CI integration is separate.

@@ -1,7 +1,6 @@
 """Check the preinstalled A5 candidate without a venv, uv sync, or NPU execution."""
 
 import argparse
-import ast
 import json
 import os
 import platform
@@ -12,7 +11,6 @@ from importlib.metadata import version
 from pathlib import Path
 
 
-VEOMNI_COMMIT = "0ec0d8829a85fa82abcf545857517d01542e703c"
 FLA_COMMIT = "a7c608f2e3f828779ceeec1fcf155a6e37ede83c"
 EXPECTED_VERSIONS = {
     "torch": "2.10.0",
@@ -42,10 +40,10 @@ def check_image(report, image_inspect, expected_docker_commit):
         "repo_digests": image["RepoDigests"],
     }
     report["build"] = info
-    if info["veomni_commit"] != VEOMNI_COMMIT or info["fla_commit"] != FLA_COMMIT:
-        raise RuntimeError("Source commits differ from the PR #1369 candidate")
-    if expected_docker_commit and info["docker_commit"] != expected_docker_commit:
-        raise RuntimeError("Image was built from another Docker commit")
+    if info["fla_commit"] != FLA_COMMIT:
+        raise RuntimeError("Image uses another FLA commit")
+    if info["veomni_commit"] != expected_docker_commit or info["docker_commit"] != expected_docker_commit:
+        raise RuntimeError("Image was built from another branch commit")
 
     opp = Path(os.environ["ASCEND_OPP_PATH"])
     cann_info = (opp / "version.info").read_text()
@@ -86,17 +84,7 @@ def check_image(report, image_inspect, expected_docker_commit):
     from torchcodec.decoders import VideoDecoder  # noqa: F401
     from triton._C.libtriton import ascend  # noqa: F401
 
-    # Inspect the image's source without constructing a model or invoking a kernel.
-    adapter = Path("/app/veomni/ops/kernels/gated_delta_rule/chunk_gated_delta_rule/standard/fla_npu.py")
-    tree = ast.parse(adapter.read_text())
-    calls = {
-        node.func.attr
-        for node in ast.walk(tree)
-        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
-    }
-    if not {"chunk_gated_delta_rule_fwd", "chunk_gated_delta_rule_bwd"} <= calls:
-        raise RuntimeError("VeOmni source does not use the PR #1369 GDN API")
-    report["stable_gdn_api"] = "passed"
+    report["fla_stable_api"] = "passed"
     report["library_imports"] = "passed"
 
     result = subprocess.run([sys.executable, "-m", "pip", "check"], capture_output=True, text=True)

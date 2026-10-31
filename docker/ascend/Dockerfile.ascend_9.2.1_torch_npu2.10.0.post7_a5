@@ -85,7 +85,7 @@ RUN python -m pip uninstall -y triton triton-ascend && \
     source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     python -c "from triton._C.libtriton import ascend"
 
-# Build the PR's stable-API FLA source against this stack for ascend950.
+# Build FLA against this stack for ascend950.
 # The A5 distribution is tiered; do not reinstall a legacy untiered wheel.
 RUN git clone https://github.com/flashserve/flash-linear-attention-npu /tmp/fla-npu && \
     cd /tmp/fla-npu && git checkout --detach a7c608f2e3f828779ceeec1fcf155a6e37ede83c && \
