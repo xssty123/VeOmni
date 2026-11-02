@@ -194,3 +194,32 @@ preserved their status, emitted live resource output and stopped the sampler
 without waiting for its 30-second sleep. Mechanical comparison confirmed that
 only the FLA build wrapper and `-j2` changed in the Dockerfile. No new Docker
 build or NPU execution has been performed for this change.
+
+## Official wheel trial contract (2026-11-02)
+
+Starting commit: `7e7a6c4c362391f6b801b4afa45b0779d7bfb22c`.
+The known-good Dockerfile, commit, run, dependency state and image remain the
+historical baseline recorded above. Run `41381560913` was cancelled; its complete
+log shows the 2 MiB BuildKit log limit, while host samples show compiler activity
+until cancellation. No CANN 9.2.1 candidate has passed yet.
+
+Allowed changes: replace only the A5 FLA source wheel build and its in-container
+resource sampler with a direct download of the official A5 ARM wheel, then install
+that retained wheel from `/app`. Keep the pinned source checkout for requirements
+and upstream checks. Preserve every other dependency/version, installation order,
+workaround, wheel checksum generation, smoke check and workflow. Only this record
+and the versioned A5 Dockerfile may change.
+
+Trial asset: `flash_linear_attention_npu_a5-26.10.0+main.deva7c608f-py3-none-manylinux_2_34_aarch64.whl`
+from `flashserve/flash-linear-attention-npu`, release `main-20261029-020006`. The
+release/tag was verified to point to full commit
+`a7c608f2e3f828779ceeec1fcf155a6e37ede83c`; the release reported a successful A5 ARM
+build in 2528 seconds. Subsequent local requests returned 404 and a local download
+was incomplete. The user explicitly chose to test downloading inside the Actions
+Docker build instead. Availability, installation and CANN 9.2.1 compatibility remain
+unverified; this is not a successful image or NPU validation record.
+
+Local checks passed: repository-pinned Ruff 0.13.2 `make quality`, Bash syntax
+for all 19 Docker RUN commands, embedded Python syntax, whitespace and mechanical
+diff scope checks. Download/install and fresh-container smoke are deferred to the
+user-triggered Actions run; no local wheel installation or NPU test was performed.

@@ -85,36 +85,19 @@ RUN python -m pip uninstall -y triton triton-ascend && \
     source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     python -c "from triton._C.libtriton import ascend"
 
-# Build FLA against this stack for ascend950.
+# Install the official A5 ARM wheel; retain it for CI environments.
 # The A5 distribution is tiered; do not reinstall a legacy untiered wheel.
 RUN git clone https://github.com/flashserve/flash-linear-attention-npu /tmp/fla-npu && \
     cd /tmp/fla-npu && git checkout --detach a7c608f2e3f828779ceeec1fcf155a6e37ede83c && \
     source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     python -m pip install -r requirements.txt && \
     FLA_NPU_SOC=ascend950 python scripts/check_npu_env.py --build-only && \
-    ( \
-        ( \
-            trap 'kill "${sample_sleep_pid:-}" 2>/dev/null || true; exit 0' TERM; \
-            while true; do \
-                echo "=== FLA build resources $(date -u +%Y-%m-%dT%H:%M:%SZ) ==="; \
-                grep -E '^(MemTotal|MemFree|MemAvailable|SwapTotal|SwapFree):' /proc/meminfo; \
-                df -h /tmp; \
-                for resource_file in /proc/pressure/memory /sys/fs/cgroup/memory.current /sys/fs/cgroup/memory.max /sys/fs/cgroup/memory.peak /sys/fs/cgroup/memory.events; do \
-                    if [ -r "$resource_file" ]; then echo "$resource_file"; cat "$resource_file"; fi; \
-                done; \
-                sleep 30 & sample_sleep_pid=$!; \
-                wait "$sample_sleep_pid"; \
-            done \
-        ) & \
-        resource_monitor_pid=$!; \
-        trap 'kill "$resource_monitor_pid" 2>/dev/null || true; wait "$resource_monitor_pid" 2>/dev/null || true' EXIT; \
-        PIP_VERBOSE=1 FLA_NPU_BUILD_ARGS="-j2" FLA_NPU_SOC=ascend950 python scripts/build_wheel.py \
-    ) && \
+    python -m pip download --no-deps --only-binary=:all: --dest /app \
+        "https://github.com/flashserve/flash-linear-attention-npu/releases/download/main-20261029-020006/flash_linear_attention_npu_a5-26.10.0%2Bmain.deva7c608f-py3-none-manylinux_2_34_aarch64.whl" && \
     python -m pip uninstall -y fla-npu flash-linear-attention-npu flash-linear-attention-npu-a5 && \
-    python -m pip install --force-reinstall --no-deps dist/flash_linear_attention_npu_a5-*.whl && \
+    python -m pip install --force-reinstall --no-deps /app/flash_linear_attention_npu_a5-*.whl && \
     TORCH_DEVICE_BACKEND_AUTOLOAD=0 python -c "from fla_npu.ops import ascendc; assert all(callable(getattr(ascendc, n, None)) for n in ('chunk_gated_delta_rule_fwd', 'chunk_gated_delta_rule_bwd'))" && \
     TORCH_DEVICE_BACKEND_AUTOLOAD=0 python scripts/check_packaged_wheel_api.py && \
-    cp dist/flash_linear_attention_npu_a5-*.whl /app/ && \
     cp scripts/check_packaged_wheel_api.py /app/check_packaged_wheel_api.py && \
     cd / && rm -rf /tmp/fla-npu
 
