@@ -42,13 +42,13 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          grep -Fq "git checkout --detach $FLA_COMMIT" docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5
+          grep -Fq "git checkout --detach $FLA_COMMIT" docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post7_a5
 
       - name: Compute unique candidate tag
         id: image
         shell: bash
         run: |
-          TAG="a5-cann9.2.1-torch_npu2.10.0.post7-${GITHUB_SHA::12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          TAG="a5-cann9.2.0-torch_npu2.10.0.post7-${GITHUB_SHA::12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "tag=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -92,7 +92,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5
+          file: ./docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post7_a5
           platforms: linux/arm64
           push: true
           tags: ${{ steps.image.outputs.tag }}
@@ -101,8 +101,8 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             ai.veomni.docker-revision=${{ github.sha }}
             ai.veomni.fla-revision=${{ env.FLA_COMMIT }}
-          cache-from: type=gha,scope=ascend-a5-cann921
-          cache-to: type=gha,scope=ascend-a5-cann921,mode=max
+          cache-from: type=gha,scope=ascend-a5-cann920
+          cache-to: type=gha,scope=ascend-a5-cann920,mode=max
           build-args: |
             BUILDKIT_INLINE_CACHE=1
             PIP_INDEX=https://pypi.org/simple
@@ -176,6 +176,7 @@ jobs:
               python /tmp/a5_image_smoke.py \
                 --image-inspect /tmp/a5-image-inspect.json \
                 --expected-docker-commit "$DOCKER_SOURCE_COMMIT" \
+                --expected-cann-version 9.2.0 \
                 --output /tmp/a5-smoke.json
             ' 2>&1 | tee reports/a5-smoke.log
 
@@ -239,7 +240,7 @@ jobs:
               'run_url': f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}",
               'target': 'a5-arm64',
               'platform': 'linux/arm64',
-              'dockerfile': 'docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5',
+              'dockerfile': 'docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post7_a5',
               'image': env['IMAGE'],
               'tag': env['IMAGE_TAG'],
               'digest': env['IMAGE_DIGEST'],
@@ -252,7 +253,7 @@ jobs:
           }
           Path('reports/ascend-candidate-result.json').write_text(json.dumps(result, indent=2) + '\n')
           with open(env['GITHUB_STEP_SUMMARY'], 'a') as summary:
-              summary.write('### A5 CANN 9.2.1 candidate\n\n')
+              summary.write('### A5 CANN 9.2.0 candidate\n\n')
               summary.write(f"Image: `{env['IMAGE']}@{env['IMAGE_DIGEST']}`\n\n")
               summary.write(f"Build: {env['BUILD_RESULT']}; packaging smoke: {passed}\n\n")
               summary.write(f"Dependency consistency: {result['dependency_consistent']}\n\n")

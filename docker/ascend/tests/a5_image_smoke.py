@@ -27,9 +27,10 @@ EXPECTED_VERSIONS = {
 }
 
 
-def check_image(report, image_inspect, expected_docker_commit):
-    if platform.machine() != "aarch64" or sys.version_info[:3] != (3, 12, 16):
-        raise RuntimeError("Expected A5 ARM64 image with Python 3.12.16")
+def check_image(report, image_inspect, expected_docker_commit, expected_cann_version="9.2.1"):
+    expected_python = {"9.2.0": (3, 12, 15), "9.2.1": (3, 12, 16)}[expected_cann_version]
+    if platform.machine() != "aarch64" or sys.version_info[:3] != expected_python:
+        raise RuntimeError(f"Expected A5 ARM64 image with Python {'.'.join(map(str, expected_python))}")
     image = json.loads(image_inspect.read_text())[0]
     labels = image["Config"]["Labels"]
     info = {
@@ -47,9 +48,11 @@ def check_image(report, image_inspect, expected_docker_commit):
 
     opp = Path(os.environ["ASCEND_OPP_PATH"])
     cann_info = (opp / "version.info").read_text()
-    match = re.search(r"^\s*Version\s*=\s*[\"']?(9\.2\.1)(?:[\"']?\s*)$", cann_info, re.MULTILINE)
+    match = re.search(
+        rf"^\s*Version\s*=\s*[\"']?({re.escape(expected_cann_version)})(?:[\"']?\s*)$", cann_info, re.MULTILINE
+    )
     if not match:
-        raise RuntimeError(f"Expected CANN 9.2.1 in {opp / 'version.info'}")
+        raise RuntimeError(f"Expected CANN {expected_cann_version} in {opp / 'version.info'}")
     report["cann_version"] = match.group(1)
 
     report["versions"] = {name: version(name) for name in EXPECTED_VERSIONS}
@@ -98,10 +101,11 @@ def main():
     parser.add_argument("--output", type=Path, required=True)
     parser.add_argument("--image-inspect", type=Path, required=True)
     parser.add_argument("--expected-docker-commit", required=True)
+    parser.add_argument("--expected-cann-version", choices=("9.2.0", "9.2.1"), default="9.2.1")
     args = parser.parse_args()
     report = {"status": "failed", "python": sys.version, "architecture": platform.machine(), "npu_executed": False}
     try:
-        check_image(report, args.image_inspect, args.expected_docker_commit)
+        check_image(report, args.image_inspect, args.expected_docker_commit, args.expected_cann_version)
         report["status"] = "passed"
     except Exception as error:
         report["error"] = f"{type(error).__name__}: {error}"
