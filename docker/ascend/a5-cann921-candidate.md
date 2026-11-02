@@ -161,3 +161,36 @@ include time, memory/swap, disk, highest-RSS processes, memory pressure/cgroup
 counters and Docker container usage. These observations add diagnostics only;
 the prior failure has not been established as OOM or a compiler error. Artifacts
 can only be uploaded if the runner remains available to execute cleanup steps.
+
+## FLA concurrency and live diagnostics contract (2026-11-02)
+
+Starting commit: `d7425cccee3668ad19648cca8e4dc65500b6046a`.
+Failed run: https://github.com/xssty123/VeOmni/actions/runs/41191932880.
+The known-good Dockerfile, commit, run, dependency state and image remain the
+historical baseline recorded above; no CANN 9.2.1 candidate has passed yet.
+
+GitHub reports that the hosted runner lost communication during FLA operator
+compilation. The log contains completed build targets and compiler warnings,
+but no fatal compiler error or confirmed OOM. Post-build diagnostic collection
+and upload were skipped when the runner became unavailable.
+
+Allowed changes: set `FLA_NPU_BUILD_ARGS="-j2"` only on the FLA wheel build, and
+wrap that command with a 30-second resource sampler writing directly to the
+Docker build log. The pinned FLA `setup.py` passes this argument to `build.sh`,
+which uses it for make parallelism. Lower parallelism tests the resource-pressure
+hypothesis; it is not a confirmed fix for the runner loss.
+
+The live samples report `/proc` memory/pressure, visible cgroup memory counters
+and filesystem usage from the build container. They do not replace the existing
+host resource snapshots and cannot guarantee delivery after a runner disconnect.
+The sampler is stopped on build completion or failure, and the build exit status
+is preserved. Preserve all dependency versions, FLA revision, other install
+commands, wheel retention, workarounds, smoke checks and workflows. Only the
+versioned A5 Dockerfile and this record may differ from the starting commit.
+
+Local checks: repository-pinned Ruff 0.13.2 `make quality` passed; all 19 Docker
+RUN commands passed Bash syntax checks. Simulated build exits 0 and 7 both
+preserved their status, emitted live resource output and stopped the sampler
+without waiting for its 30-second sleep. Mechanical comparison confirmed that
+only the FLA build wrapper and `-j2` changed in the Dockerfile. No new Docker
+build or NPU execution has been performed for this change.
