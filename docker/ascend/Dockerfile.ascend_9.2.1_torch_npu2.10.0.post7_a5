@@ -32,7 +32,7 @@ RUN if [ "${APT_SOURCE}" != "http://ports.ubuntu.com/ubuntu-ports/" ]; then \
 # binutils provides readelf for check_packaged_wheel_api.py.
 RUN apt-get -o Acquire::Check-Date=false update -y && \
     DEBIAN_FRONTEND=noninteractive apt-get -o Acquire::Check-Date=false install -y --no-install-recommends \
-        gcc g++ cmake libnuma-dev sudo wget git curl jq vim build-essential ssh ca-certificates ffmpeg pkg-config gawk pciutils binutils && \
+        gcc g++ cmake libnuma-dev sudo wget git curl jq vim build-essential ssh ca-certificates ffmpeg pkg-config gawk pciutils binutils patch && \
     apt-get clean && \
     rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
     pip install --upgrade pip setuptools packaging && \
@@ -85,15 +85,18 @@ RUN python -m pip uninstall -y triton triton-ascend && \
     source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     python -c "from triton._C.libtriton import ascend"
 
-# Install the official A5 ARM wheel; retain it for CI environments.
-# The A5 distribution is tiered; do not reinstall a legacy untiered wheel.
+# Build the A5 wheel with the upstream script and retain it for CI environments.
+ARG FLA_BUILD_JOBS=4
 RUN git clone https://github.com/flashserve/flash-linear-attention-npu /tmp/fla-npu && \
     cd /tmp/fla-npu && git checkout --detach a7c608f2e3f828779ceeec1fcf155a6e37ede83c && \
     source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
-    python -m pip install -r requirements.txt && \
-    FLA_NPU_SOC=ascend950 python scripts/check_npu_env.py --build-only && \
-    python -m pip download --no-deps --only-binary=:all: --dest /app \
-        "https://github.com/flashserve/flash-linear-attention-npu/releases/download/main-20261029-020006/flash_linear_attention_npu_a5-26.10.0%2Bmain.deva7c608f-py3-none-manylinux_2_34_aarch64.whl" && \
+    export FLA_NPU_SOC=ascend950 TORCH_DEVICE_BACKEND_AUTOLOAD=0 && \
+    python -m pip install -r requirements.txt 'setuptools>=70.1' wheel && \
+    python scripts/check_npu_env.py --build-only && \
+    unset FLA_NPU_OPS && \
+    PIP_VERBOSE=1 FLA_NPU_BUILD_ARGS="-j${FLA_BUILD_JOBS}" \
+        python -u scripts/build_wheel.py --no-progress --wheel-dir /app && \
+    python -m zipfile -t /app/flash_linear_attention_npu_a5-*.whl && \
     python -m pip uninstall -y fla-npu flash-linear-attention-npu flash-linear-attention-npu-a5 && \
     python -m pip install --force-reinstall --no-deps /app/flash_linear_attention_npu_a5-*.whl && \
     TORCH_DEVICE_BACKEND_AUTOLOAD=0 python -c "from fla_npu.ops import ascendc; assert all(callable(getattr(ascendc, n, None)) for n in ('chunk_gated_delta_rule_fwd', 'chunk_gated_delta_rule_bwd'))" && \

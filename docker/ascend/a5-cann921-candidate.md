@@ -223,3 +223,41 @@ Local checks passed: repository-pinned Ruff 0.13.2 `make quality`, Bash syntax
 for all 19 Docker RUN commands, embedded Python syntax, whitespace and mechanical
 diff scope checks. Download/install and fresh-container smoke are deferred to the
 user-triggered Actions run; no local wheel installation or NPU test was performed.
+
+
+## Restore source build from the A5 server procedure (2026-11-02)
+
+Comparison base: `c6dd9c4e1c0e59b7123d4b3608bb6fb0d2f7f8e7`.
+Run `41407538650` failed at the official wheel download with HTTP 404.
+The historical successful Docker baseline above remains unchanged; there is
+still no successful image for this candidate stack.
+
+The pinned FLA source completed the official wheel build on an A5 ARM server
+with openEuler 24.03, CANN 9.2.0 and `-j16` (run directory
+`20261102-035712-Tsz2TX`, exit 0). The resulting wheel passed archive integrity
+and the upstream installed-package API check with torch 2.10.0 / torch_npu
+2.10.0.post4. This is component build/import evidence, not CANN 9.2.1 or NPU
+computation validation.
+
+Allowed changes: restore the official source build in this A5 Dockerfile,
+explicitly install `patch`, `setuptools>=70.1` and `wheel` as build prerequisites,
+and use `FLA_BUILD_JOBS=4` for the four-core hosted runner. Match the successful
+procedure: select `ascend950`, disable Torch backend autoload during packaging,
+run the build-only preflight, unset `FLA_NPU_OPS` to build all registered operators,
+and invoke `python -u scripts/build_wheel.py --no-progress --wheel-dir /app`.
+Check wheel archive integrity before installation. Retain the wheel and upstream
+`/app/fla-npu-build.log`; a failed Docker layer does not provide a published image
+from which to retrieve this file.
+
+The candidate workflow raises BuildKit's per-step log limit to 128 MiB and its
+log rate limit to 1 MiB/s. Runner resource artifacts, the six-hour timeout,
+manual dispatch, GHCR destination and fresh-container smoke remain unchanged.
+Preserve all runtime dependency versions, FLA commit, other installation
+commands/workarounds and UT/ST. Scope: this record, the A5 Dockerfile and the A5
+candidate workflow only. `FLA_BUILD_JOBS` can be overridden with a Docker build
+argument when using a larger build host.
+
+Local checks: repository-pinned Ruff 0.13.2 `make quality`, YAML parsing,
+Bash syntax for all eight workflow run blocks and 19 Docker RUN commands,
+and whitespace checks passed. No Actions dispatch, image build or NPU execution
+was performed for this change.
