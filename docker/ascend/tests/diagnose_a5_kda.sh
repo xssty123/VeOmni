@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 # Host entry point; --inside runs only in the prepared ARM64 dependency image.
 set -eo pipefail
+export DIAG_MODE=${DIAG_MODE:-diagnose-kda}
+case "$DIAG_MODE" in
+    diagnose-kda|diagnose-fla) ;;
+    *) echo "Unsupported diagnostic mode: $DIAG_MODE" >&2; exit 2 ;;
+esac
 
 if [[ "${1:-}" == --inside ]]; then
     source /usr/local/Ascend/ascend-toolkit/set_env.sh
@@ -12,16 +17,44 @@ if [[ "${1:-}" == --inside ]]; then
     python -m pip install -r requirements.txt 'setuptools>=70.1' wheel
     python -m pip freeze > /reports/requirements.txt
     python scripts/check_npu_env.py --build-only
-    python scripts/check_build_ops.py --ops=chunk_kda_bwd_intra
+    if [[ "$DIAG_MODE" == diagnose-kda ]]; then
+        python scripts/check_build_ops.py --ops=chunk_kda_bwd_intra
+    fi
     unset FLA_NPU_OPS FLA_NPU_BUILD_ARGS
     date -u +%Y-%m-%dT%H:%M:%SZ > /reports/compile-started-at.txt
     started=$SECONDS
     set +e
-    bash build.sh --soc=ascend950 --pkg --vendor_name=fla_npu --ops=chunk_kda_bwd_intra -j4
+    if [[ "$DIAG_MODE" == diagnose-fla ]]; then
+        PIP_VERBOSE=1 FLA_NPU_BUILD_ARGS="-j4" \
+            python -u scripts/build_wheel.py --no-progress --wheel-dir /app
+    else
+        bash build.sh --soc=ascend950 --pkg --vendor_name=fla_npu --ops=chunk_kda_bwd_intra -j4
+    fi
     status=$?
     set -e
     printf '%s\n' "$status" > /reports/compile-exit-code.txt
     printf '%s\n' "$((SECONDS - started))" > /reports/compile-seconds.txt
+    if [[ -f /app/fla-npu-build.log ]]; then
+        cp /app/fla-npu-build.log /reports/
+    fi
+    if [[ "$DIAG_MODE" == diagnose-fla && "$status" == 0 ]]; then
+        mkdir -p /reports/wheels
+        cp /app/flash_linear_attention_npu_a5-*.whl /reports/wheels/
+        (cd /reports/wheels && sha256sum ./*.whl) > /reports/wheel-sha256.txt
+        validate_wheel() {
+            python -m zipfile -t /app/flash_linear_attention_npu_a5-*.whl &&
+                python -m pip uninstall -y fla-npu flash-linear-attention-npu flash-linear-attention-npu-a5 &&
+                python -m pip install --force-reinstall --no-deps /app/flash_linear_attention_npu_a5-*.whl &&
+                python -c "from fla_npu.ops import ascendc; assert all(callable(getattr(ascendc, n, None)) for n in ('chunk_gated_delta_rule_fwd', 'chunk_gated_delta_rule_bwd'))" &&
+                python scripts/check_packaged_wheel_api.py
+        }
+        set +e
+        validate_wheel
+        status=$?
+        set -e
+        printf '%s\n' "$status" > /reports/validation-exit-code.txt
+        python -m pip freeze > /reports/requirements-after-validation.txt
+    fi
     exit "$status"
 fi
 
@@ -30,7 +63,7 @@ set -u
 mkdir -p "$REPORT_DIR"
 REPORT_DIR=$(cd "$REPORT_DIR" && pwd)
 export REPORT_DIR
-container=a5-kda-diagnostic
+container=a5-${DIAG_MODE}
 started_at=$(date +%s)
 monitor_pid=
 
@@ -79,15 +112,16 @@ def read_int(name):
     return int(path.read_text()) if path.exists() else None
 
 result = {
-    'mode': 'diagnose-kda',
+    'mode': os.environ['DIAG_MODE'],
     'veomni_commit': os.environ['GITHUB_SHA'],
     'fla_commit': os.environ['FLA_COMMIT'],
     'soc': 'ascend950',
-    'operator': 'chunk_kda_bwd_intra',
+    'operator': 'all' if os.environ['DIAG_MODE'] == 'diagnose-fla' else 'chunk_kda_bwd_intra',
     'jobs': 4,
     'container_exit_code': int(os.environ['DIAG_EXIT_CODE']),
     'compile_exit_code': read_int('compile-exit-code.txt'),
     'compile_seconds': read_int('compile-seconds.txt'),
+    'validation_exit_code': read_int('validation-exit-code.txt'),
     'npu_ut_st': 'not_run',
 }
 (root / 'diagnostic-result.json').write_text(json.dumps(result, indent=2) + '\n')
@@ -104,7 +138,7 @@ docker image inspect "$DIAG_IMAGE" > "$REPORT_DIR/image-inspect.json"
 docker create --name "$container" --entrypoint /bin/bash \
     --mount "type=bind,src=$REPORT_DIR,dst=/reports" \
     --mount "type=bind,src=$(cd "$(dirname "$0")" && pwd)/$(basename "$0"),dst=/diagnose_a5_kda.sh,readonly" \
-    -e FLA_COMMIT -e TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
+    -e FLA_COMMIT -e DIAG_MODE -e TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
     "$DIAG_IMAGE" /diagnose_a5_kda.sh --inside
 
 (

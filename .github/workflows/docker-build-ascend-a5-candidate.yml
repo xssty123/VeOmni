@@ -5,12 +5,13 @@ on:
   workflow_dispatch:
     inputs:
       mode:
-        description: Full image build or single-operator compilation diagnostic
+        description: Full image build, KDA diagnostic or full FLA wheel diagnostic
         type: choice
         default: full
         options:
           - full
           - diagnose-kda
+          - diagnose-fla
 
 permissions:
   contents: read
@@ -26,7 +27,7 @@ concurrency:
 
 jobs:
   build-candidate:
-    if: github.repository == 'xssty123/VeOmni' && inputs.mode != 'diagnose-kda'
+    if: github.repository == 'xssty123/VeOmni' && inputs.mode == 'full'
     runs-on: ubuntu-22.04-arm
     timeout-minutes: 360
     permissions:
@@ -214,7 +215,7 @@ jobs:
           if-no-files-found: error
 
   record-result:
-    if: always() && github.repository == 'xssty123/VeOmni' && inputs.mode != 'diagnose-kda'
+    if: always() && github.repository == 'xssty123/VeOmni' && inputs.mode == 'full'
     needs: [build-candidate, validate-candidate]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -291,12 +292,15 @@ jobs:
               raise SystemExit('Candidate build/smoke failed or evidence is incomplete')
           PY
 
-  diagnose-kda:
-    if: github.repository == 'xssty123/VeOmni' && inputs.mode == 'diagnose-kda'
+  diagnose:
+    if: github.repository == 'xssty123/VeOmni' && (inputs.mode == 'diagnose-kda' || inputs.mode == 'diagnose-fla')
     runs-on: ubuntu-22.04-arm
     timeout-minutes: 360
     permissions:
       contents: read
+    env:
+      DIAG_MODE: ${{ inputs.mode }}
+      REPORT_DIR: ${{ runner.temp }}/a5-${{ inputs.mode }}
     steps:
       - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.1
@@ -341,11 +345,10 @@ jobs:
             BUILDKIT_INLINE_CACHE=1
             PIP_INDEX=https://pypi.org/simple
 
-      - name: Diagnose KDA with four compilation jobs and live resource logs
+      - name: Diagnose FLA with four compilation jobs and live resource logs
         shell: bash
         env:
           DIAG_IMAGE: veomni-a5-kda-diagnostic:local
-          REPORT_DIR: ${{ runner.temp }}/a5-kda-diagnostics
         run: bash docker/ascend/tests/diagnose_a5_kda.sh
 
       - name: Summarize diagnostic only
@@ -353,21 +356,21 @@ jobs:
         shell: bash
         run: |
           {
-            echo '### A5 KDA compilation diagnostic'
+            echo '### A5 FLA compilation diagnostic'
             echo 'This run does not build or validate a complete image or execute NPU tests.'
-            if [ -f "$RUNNER_TEMP/a5-kda-diagnostics/diagnostic-result.json" ]; then
+            if [ -f "$REPORT_DIR/diagnostic-result.json" ]; then
               echo '```json'
-              cat "$RUNNER_TEMP/a5-kda-diagnostics/diagnostic-result.json"
+              cat "$REPORT_DIR/diagnostic-result.json"
               echo '```'
             else
               echo 'No completed diagnostic record; inspect the preparation/build logs.'
             fi
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Upload KDA diagnostics
+      - name: Upload FLA diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: a5-kda-diagnostics
-          path: ${{ runner.temp }}/a5-kda-diagnostics/
+          name: a5-${{ inputs.mode }}
+          path: ${{ env.REPORT_DIR }}/
           if-no-files-found: warn

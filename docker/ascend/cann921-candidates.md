@@ -1,5 +1,33 @@
 # Unified A3/A5 CANN 9.2.1 candidates
 
+## Full FLA diagnostic (2026-11-03)
+
+Allowed diff from `115ace9e1f10c5bf9cccd9e3b3475bc497ac2c12`: extend the A5
+workflow and diagnostic script with `diagnose-fla`, and update this record.
+No Dockerfile, dependency, full-image command, A3 or UT/ST changes.
+Plan: implement, check locally, push the unified branch, dispatch one full
+FLA diagnostic. Use the same Docker/development skills as the single-op run.
+
+The successful single-op baseline is run
+[41603511535](https://github.com/xssty123/VeOmni/actions/runs/41603511535)
+at that commit: pinned FLA `a7c608f`, CANN 9.2.1, `ascend950`, `-j4`, exit 0,
+260 seconds. Recorded container memory.peak reached 2.79 GiB and all sampled
+OOM counters were zero. This produced a single-op native package, not a full
+image or full FLA wheel; there is no published image tag/digest for that run.
+
+`diagnose-fla` uses the same prepared container and live resource monitor,
+unsets the operator filter and runs the Dockerfile's full `build_wheel.py`
+command with four jobs. It retains the wheel, SHA256 and build log, then runs
+the same zip, installation and packaged API checks as the Dockerfile. Build
+and validation exit codes are recorded separately. It does not build
+TorchCodec, publish an image or run NPU computation. Select this mode on the
+existing A5 workflow; its artifact is `a5-diagnose-fla`.
+
+Local checks passed: pinned `make quality`, YAML and mode/job isolation,
+Bash/embedded Python syntax, and mocked full-wheel success, compile failure
+and API failure. The latter checks verify that the operator filter is unset,
+`-j4` reaches the builder, and compile/validation exits and logs are preserved.
+
 ## A5 single-operator diagnostic (2026-11-03)
 
 Plan: record the allowed diff, implement and locally check the diagnostic,
