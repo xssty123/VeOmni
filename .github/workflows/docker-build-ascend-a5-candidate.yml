@@ -1,4 +1,4 @@
-name: docker-build-ascend-a5-candidate
+name: docker-build-ascend-a3-candidate
 
 on:
   workflow_dispatch:
@@ -42,13 +42,13 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          grep -Fq "git checkout --detach $FLA_COMMIT" docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post7_a5
+          grep -Fq "git checkout --detach $FLA_COMMIT" docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post7_a3
 
       - name: Compute unique candidate tag
         id: image
         shell: bash
         run: |
-          TAG="a5-cann9.2.0-torch_npu2.10.0.post7-${GITHUB_SHA::12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
+          TAG="a3-cann9.2.0-torch_npu2.10.0.post7-${GITHUB_SHA::12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           echo "tag=${IMAGE}:${TAG}" >> "$GITHUB_OUTPUT"
 
       - name: Set up Docker Buildx
@@ -68,7 +68,7 @@ jobs:
       - name: Start build resource logging
         shell: bash
         run: |
-          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/a5-build-started-at"
+          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/a3-build-started-at"
           nohup bash -c '
             while true; do
               date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -84,15 +84,15 @@ jobs:
               timeout 10s docker stats --no-stream --format "{{.Name}} CPU={{.CPUPerc}} MEM={{.MemUsage}} PIDS={{.PIDs}}"
               sleep 30
             done
-          ' > "$RUNNER_TEMP/a5-build-resources.log" 2>&1 < /dev/null &
-          echo "$!" > "$RUNNER_TEMP/a5-build-resources.pid"
+          ' > "$RUNNER_TEMP/a3-build-resources.log" 2>&1 < /dev/null &
+          echo "$!" > "$RUNNER_TEMP/a3-build-resources.pid"
 
       - name: Build and push candidate
         id: build
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post7_a5
+          file: ./docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post7_a3
           platforms: linux/arm64
           push: true
           tags: ${{ steps.image.outputs.tag }}
@@ -101,8 +101,8 @@ jobs:
             org.opencontainers.image.revision=${{ github.sha }}
             ai.veomni.docker-revision=${{ github.sha }}
             ai.veomni.fla-revision=${{ env.FLA_COMMIT }}
-          cache-from: type=gha,scope=ascend-a5-cann920
-          cache-to: type=gha,scope=ascend-a5-cann920,mode=max
+          cache-from: type=gha,scope=ascend-a3-cann920
+          cache-to: type=gha,scope=ascend-a3-cann920,mode=max
           build-args: |
             BUILDKIT_INLINE_CACHE=1
             PIP_INDEX=https://pypi.org/simple
@@ -111,27 +111,27 @@ jobs:
         if: always()
         shell: bash
         run: |
-          if [ -f "$RUNNER_TEMP/a5-build-resources.pid" ]; then
-            kill "$(cat "$RUNNER_TEMP/a5-build-resources.pid")" 2>/dev/null || true
+          if [ -f "$RUNNER_TEMP/a3-build-resources.pid" ]; then
+            kill "$(cat "$RUNNER_TEMP/a3-build-resources.pid")" 2>/dev/null || true
           fi
-          mkdir -p "$RUNNER_TEMP/a5-build-diagnostics"
-          if [ -f "$RUNNER_TEMP/a5-build-resources.log" ]; then
-            cp "$RUNNER_TEMP/a5-build-resources.log" "$RUNNER_TEMP/a5-build-diagnostics/"
-            tail -n 80 "$RUNNER_TEMP/a5-build-resources.log"
+          mkdir -p "$RUNNER_TEMP/a3-build-diagnostics"
+          if [ -f "$RUNNER_TEMP/a3-build-resources.log" ]; then
+            cp "$RUNNER_TEMP/a3-build-resources.log" "$RUNNER_TEMP/a3-build-diagnostics/"
+            tail -n 80 "$RUNNER_TEMP/a3-build-resources.log"
           fi
-          if [ -f "$RUNNER_TEMP/a5-build-started-at" ]; then
-            sudo journalctl -k --since "$(cat "$RUNNER_TEMP/a5-build-started-at")" --no-pager \
-              > "$RUNNER_TEMP/a5-build-diagnostics/kernel.log" 2>&1 || true
+          if [ -f "$RUNNER_TEMP/a3-build-started-at" ]; then
+            sudo journalctl -k --since "$(cat "$RUNNER_TEMP/a3-build-started-at")" --no-pager \
+              > "$RUNNER_TEMP/a3-build-diagnostics/kernel.log" 2>&1 || true
           fi
-          free -h > "$RUNNER_TEMP/a5-build-diagnostics/final-memory.txt" 2>&1 || true
-          df -h > "$RUNNER_TEMP/a5-build-diagnostics/final-disk.txt" 2>&1 || true
+          free -h > "$RUNNER_TEMP/a3-build-diagnostics/final-memory.txt" 2>&1 || true
+          df -h > "$RUNNER_TEMP/a3-build-diagnostics/final-disk.txt" 2>&1 || true
 
       - name: Upload build diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: a5-build-diagnostics
-          path: ${{ runner.temp }}/a5-build-diagnostics/
+          name: a3-build-diagnostics
+          path: ${{ runner.temp }}/a3-build-diagnostics/
           if-no-files-found: warn
 
   validate-candidate:
@@ -164,40 +164,40 @@ jobs:
           mkdir -p reports
           test -n "$IMAGE_DIGEST"
           docker pull "$IMAGE@$IMAGE_DIGEST"
-          docker image inspect "$IMAGE@$IMAGE_DIGEST" > reports/a5-image-inspect.json
-          docker run --name a5-candidate-smoke --entrypoint /bin/bash \
-            --mount "type=bind,src=$PWD/docker/ascend/tests/a5_image_smoke.py,dst=/tmp/a5_image_smoke.py,readonly" \
-            --mount "type=bind,src=$PWD/reports/a5-image-inspect.json,dst=/tmp/a5-image-inspect.json,readonly" \
+          docker image inspect "$IMAGE@$IMAGE_DIGEST" > reports/a3-image-inspect.json
+          docker run --name a3-candidate-smoke --entrypoint /bin/bash \
+            --mount "type=bind,src=$PWD/docker/ascend/tests/a3_image_smoke.py,dst=/tmp/a3_image_smoke.py,readonly" \
+            --mount "type=bind,src=$PWD/reports/a3-image-inspect.json,dst=/tmp/a3-image-inspect.json,readonly" \
             -e DOCKER_SOURCE_COMMIT="$GITHUB_SHA" \
             -e TORCH_DEVICE_BACKEND_AUTOLOAD=0 \
             "$IMAGE@$IMAGE_DIGEST" -c '
               set -eo pipefail
               source /usr/local/Ascend/ascend-toolkit/set_env.sh
-              python /tmp/a5_image_smoke.py \
-                --image-inspect /tmp/a5-image-inspect.json \
+              python /tmp/a3_image_smoke.py \
+                --image-inspect /tmp/a3-image-inspect.json \
                 --expected-docker-commit "$DOCKER_SOURCE_COMMIT" \
                 --expected-cann-version 9.2.0 \
-                --output /tmp/a5-smoke.json
-            ' 2>&1 | tee reports/a5-smoke.log
+                --output /tmp/a3-smoke.json
+            ' 2>&1 | tee reports/a3-smoke.log
 
       - name: Collect image evidence
         if: always()
         shell: bash
         run: |
           mkdir -p reports
-          if docker inspect a5-candidate-smoke >/dev/null 2>&1; then
-            for file in /tmp/a5-smoke.json \
-              /app/a5-image-requirements.txt /app/a5-ci-wheels.sha256; do
-              docker cp "a5-candidate-smoke:$file" reports/ || true
+          if docker inspect a3-candidate-smoke >/dev/null 2>&1; then
+            for file in /tmp/a3-smoke.json \
+              /app/a3-image-requirements.txt /app/a3-ci-wheels.sha256; do
+              docker cp "a3-candidate-smoke:$file" reports/ || true
             done
-            docker rm a5-candidate-smoke
+            docker rm a3-candidate-smoke
           fi
 
       - name: Upload smoke evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: a5-candidate-smoke
+          name: a3-candidate-smoke
           path: reports/
           if-no-files-found: error
 
@@ -216,7 +216,7 @@ jobs:
         uses: actions/download-artifact@v4
         continue-on-error: true
         with:
-          name: a5-candidate-smoke
+          name: a3-candidate-smoke
           path: reports
 
       - name: Record candidate result
@@ -229,7 +229,7 @@ jobs:
           from pathlib import Path
 
           env = os.environ
-          smoke_file = Path('reports/a5-smoke.json')
+          smoke_file = Path('reports/a3-smoke.json')
           smoke = json.loads(smoke_file.read_text()) if smoke_file.exists() else None
           passed = env['BUILD_RESULT'] == env['SMOKE_RESULT'] == 'success'
           passed = passed and smoke is not None and smoke.get('status') == 'passed'
@@ -238,9 +238,9 @@ jobs:
               'veomni_commit': env['GITHUB_SHA'],
               'fla_commit': env['FLA_COMMIT'],
               'run_url': f"{env['GITHUB_SERVER_URL']}/{env['GITHUB_REPOSITORY']}/actions/runs/{env['GITHUB_RUN_ID']}",
-              'target': 'a5-arm64',
+              'target': 'a3-arm64',
               'platform': 'linux/arm64',
-              'dockerfile': 'docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post7_a5',
+              'dockerfile': 'docker/ascend/Dockerfile.ascend_9.2.0_torch_npu2.10.0.post7_a3',
               'image': env['IMAGE'],
               'tag': env['IMAGE_TAG'],
               'digest': env['IMAGE_DIGEST'],
@@ -253,7 +253,7 @@ jobs:
           }
           Path('reports/ascend-candidate-result.json').write_text(json.dumps(result, indent=2) + '\n')
           with open(env['GITHUB_STEP_SUMMARY'], 'a') as summary:
-              summary.write('### A5 CANN 9.2.0 candidate\n\n')
+              summary.write('### A3 CANN 9.2.0 candidate\n\n')
               summary.write(f"Image: `{env['IMAGE']}@{env['IMAGE_DIGEST']}`\n\n")
               summary.write(f"Build: {env['BUILD_RESULT']}; packaging smoke: {passed}\n\n")
               summary.write(f"Dependency consistency: {result['dependency_consistent']}\n\n")
@@ -264,7 +264,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: a5-candidate-result
+          name: a3-candidate-result
           path: reports/
           if-no-files-found: error
 
