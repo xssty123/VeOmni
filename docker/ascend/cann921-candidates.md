@@ -1,5 +1,47 @@
 # Unified A3/A5 CANN 9.2.1 candidates
 
+## A5 single-operator diagnostic (2026-11-03)
+
+Plan: record the allowed diff, implement and locally check the diagnostic,
+then push `codex/ascend-cann921` to the personal fork and dispatch one
+`diagnose-kda` run. Skills: `veomni-ascend-docker`, `veomni-develop`.
+
+Comparison base: `0f199b87`. The A5 source-build baseline is `83e80c73`
+(not a successful image); runs `41452062154` and `41480937068` lost runner
+communication. The known-good A3 packaging commit/run/digest below remain
+historical evidence, not an A5 acceptance baseline.
+
+Allowed changes:
+
+| File | Allowed change |
+| --- | --- |
+| A5 9.2.1 Dockerfile | Name the existing dependency stage `fla-build-env`; inherit it in the final stage before FLA compilation |
+| A5 candidate workflow | Add `full` (default) / `diagnose-kda` modes; isolated diagnostic job; fix kernel-log timestamp |
+| `docker/ascend/tests/diagnose_a5_kda.sh` | Add single-op build and live host/container resource capture, exit status and artifacts |
+| This document | Record diagnostic scope, execution and evidence |
+
+Preserve all full-image dependency versions, install commands/order, FLA SHA,
+full-operator compilation and `-j4`. Preserve A3, UT/ST and release workflows.
+The diagnostic uses the same dependency stage, then the same source checkout,
+requirements installation and build-only preflight. It calls native `build.sh`
+with `--ops=chunk_kda_bwd_intra`, `--soc=ascend950`, `--pkg`, and `-j4`.
+It neither produces a validated full wheel nor publishes an image.
+
+Select `docker-build-ascend-a5-candidate`, branch `codex/ascend-cann921`,
+mode `diagnose-kda`. No new default-branch workflow registration is needed.
+Host memory, highest-RSS processes and container cgroup counters are sampled
+every five seconds and streamed to Actions. These are samples, not a guaranteed
+instantaneous peak. A lost runner can still prevent final artifact upload.
+Diagnosis records are separate from full-image packaging smoke records.
+
+Local checks: repository-pinned `make quality`, YAML/Bash/embedded Python
+syntax, and a mechanical comparison proving the Dockerfile differs only in
+stage declarations passed. Mocked host execution verified success, compiler
+exit 137, and preparation failure preserve their exit codes, distinguish an
+unstarted compiler, write result records and clean up the container. These
+checks do not validate the ARM64 compiler; the dispatched run supplies that
+evidence.
+
 ## Scope and allowed diff (2026-11-03)
 
 The shared development branch is `codex/ascend-cann921`, based on upstream

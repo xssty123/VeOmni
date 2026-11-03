@@ -1,8 +1,16 @@
 name: docker-build-ascend-a5-candidate
-run-name: CANN 9.2.1 a5 candidate (${{ github.ref_name }})
+run-name: CANN 9.2.1 a5 ${{ inputs.mode || 'full' }} (${{ github.ref_name }})
 
 on:
   workflow_dispatch:
+    inputs:
+      mode:
+        description: Full image build or single-operator compilation diagnostic
+        type: choice
+        default: full
+        options:
+          - full
+          - diagnose-kda
 
 permissions:
   contents: read
@@ -18,7 +26,7 @@ concurrency:
 
 jobs:
   build-candidate:
-    if: github.repository == 'xssty123/VeOmni'
+    if: github.repository == 'xssty123/VeOmni' && inputs.mode != 'diagnose-kda'
     runs-on: ubuntu-22.04-arm
     timeout-minutes: 360
     permissions:
@@ -70,7 +78,7 @@ jobs:
       - name: Start build resource logging
         shell: bash
         run: |
-          date -u +%Y-%m-%dT%H:%M:%SZ > "$RUNNER_TEMP/${TARGET}-build-started-at"
+          date +%s > "$RUNNER_TEMP/${TARGET}-build-started-at"
           nohup bash -c '
             while true; do
               date -u +"%Y-%m-%dT%H:%M:%SZ"
@@ -123,7 +131,7 @@ jobs:
             tail -n 80 "$RUNNER_TEMP/${TARGET}-build-resources.log"
           fi
           if [ -f "$RUNNER_TEMP/${TARGET}-build-started-at" ]; then
-            sudo journalctl -k --since "$(cat "$RUNNER_TEMP/${TARGET}-build-started-at")" --no-pager \
+            sudo journalctl -k --since "@$(cat "$RUNNER_TEMP/${TARGET}-build-started-at")" --no-pager \
               > "$RUNNER_TEMP/${TARGET}-build-diagnostics/kernel.log" 2>&1 || true
           fi
           free -h > "$RUNNER_TEMP/${TARGET}-build-diagnostics/final-memory.txt" 2>&1 || true
@@ -206,7 +214,7 @@ jobs:
           if-no-files-found: error
 
   record-result:
-    if: always() && github.repository == 'xssty123/VeOmni'
+    if: always() && github.repository == 'xssty123/VeOmni' && inputs.mode != 'diagnose-kda'
     needs: [build-candidate, validate-candidate]
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -282,3 +290,84 @@ jobs:
           if not result['packaging_smoke_passed']:
               raise SystemExit('Candidate build/smoke failed or evidence is incomplete')
           PY
+
+  diagnose-kda:
+    if: github.repository == 'xssty123/VeOmni' && inputs.mode == 'diagnose-kda'
+    runs-on: ubuntu-22.04-arm
+    timeout-minutes: 360
+    permissions:
+      contents: read
+    steps:
+      - name: Free disk space
+        uses: jlumbroso/free-disk-space@v1.3.1
+        with:
+          tool-cache: true
+
+      - name: Checkout diagnostic source
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Check pinned build source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
+          grep -Fq "git checkout --detach $FLA_COMMIT" docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          driver-opts: |
+            env.BUILDKIT_STEP_LOG_MAX_SIZE=134217728
+            env.BUILDKIT_STEP_LOG_MAX_SPEED=1048576
+
+      - name: Build the existing FLA dependency environment
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5
+          target: fla-build-env
+          platforms: linux/arm64
+          load: true
+          push: false
+          tags: veomni-a5-kda-diagnostic:local
+          cache-from: |
+            type=gha,scope=ascend-a5-cann921-diagnostic
+            type=gha,scope=ascend-a5-cann921
+          cache-to: type=gha,scope=ascend-a5-cann921-diagnostic,mode=max
+          build-args: |
+            BUILDKIT_INLINE_CACHE=1
+            PIP_INDEX=https://pypi.org/simple
+
+      - name: Diagnose KDA with four compilation jobs and live resource logs
+        shell: bash
+        env:
+          DIAG_IMAGE: veomni-a5-kda-diagnostic:local
+          REPORT_DIR: ${{ runner.temp }}/a5-kda-diagnostics
+        run: bash docker/ascend/tests/diagnose_a5_kda.sh
+
+      - name: Summarize diagnostic only
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '### A5 KDA compilation diagnostic'
+            echo 'This run does not build or validate a complete image or execute NPU tests.'
+            if [ -f "$RUNNER_TEMP/a5-kda-diagnostics/diagnostic-result.json" ]; then
+              echo '```json'
+              cat "$RUNNER_TEMP/a5-kda-diagnostics/diagnostic-result.json"
+              echo '```'
+            else
+              echo 'No completed diagnostic record; inspect the preparation/build logs.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload KDA diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: a5-kda-diagnostics
+          path: ${{ runner.temp }}/a5-kda-diagnostics/
+          if-no-files-found: warn

@@ -1,6 +1,6 @@
 # A5 / ARM64, CANN 9.2.1, Ubuntu 22.04 and shared Python 3.12.
 # torch-npu source: https://ascend.devcloud.huaweicloud.com/pypi/simple/torch-npu/
-FROM quay.io/ascend/cann:9.2.1-950-ubuntu22.04-py3.12
+FROM quay.io/ascend/cann:9.2.1-950-ubuntu22.04-py3.12 AS fla-build-env
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 USER root
@@ -84,6 +84,8 @@ RUN python -m pip uninstall -y triton triton-ascend && \
     python -m pip install --no-deps --force-reinstall /app/triton_ascend-*.whl && \
     source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
     python -c "from triton._C.libtriton import ascend"
+
+FROM fla-build-env AS final
 
 # Build the A5 wheel with the upstream script and retain it for CI environments.
 ARG FLA_BUILD_JOBS=4
