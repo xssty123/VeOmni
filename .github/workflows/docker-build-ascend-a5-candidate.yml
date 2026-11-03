@@ -300,7 +300,6 @@ jobs:
       contents: read
     env:
       DIAG_MODE: ${{ inputs.mode }}
-      REPORT_DIR: ${{ runner.temp }}/a5-${{ inputs.mode }}
     steps:
       - name: Free disk space
         uses: jlumbroso/free-disk-space@v1.3.1
@@ -349,6 +348,7 @@ jobs:
         shell: bash
         env:
           DIAG_IMAGE: veomni-a5-kda-diagnostic:local
+          REPORT_DIR: ${{ runner.temp }}/a5-${{ inputs.mode }}
         run: bash docker/ascend/tests/diagnose_a5_kda.sh
 
       - name: Summarize diagnostic only
@@ -358,9 +358,9 @@ jobs:
           {
             echo '### A5 FLA compilation diagnostic'
             echo 'This run does not build or validate a complete image or execute NPU tests.'
-            if [ -f "$REPORT_DIR/diagnostic-result.json" ]; then
+            if [ -f "$RUNNER_TEMP/a5-$DIAG_MODE/diagnostic-result.json" ]; then
               echo '```json'
-              cat "$REPORT_DIR/diagnostic-result.json"
+              cat "$RUNNER_TEMP/a5-$DIAG_MODE/diagnostic-result.json"
               echo '```'
             else
               echo 'No completed diagnostic record; inspect the preparation/build logs.'
@@ -372,5 +372,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: a5-${{ inputs.mode }}
-          path: ${{ env.REPORT_DIR }}/
+          path: ${{ runner.temp }}/a5-${{ inputs.mode }}/
           if-no-files-found: warn
