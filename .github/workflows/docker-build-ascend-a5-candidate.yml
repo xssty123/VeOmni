@@ -344,7 +344,7 @@ jobs:
             BUILDKIT_INLINE_CACHE=1
             PIP_INDEX=https://pypi.org/simple
 
-      - name: Diagnose FLA with four compilation jobs and live resource logs
+      - name: Diagnose FLA with live resource logs (full wheel uses two jobs)
         shell: bash
         env:
           DIAG_IMAGE: veomni-a5-kda-diagnostic:local

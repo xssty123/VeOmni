@@ -25,7 +25,7 @@ if [[ "${1:-}" == --inside ]]; then
     started=$SECONDS
     set +e
     if [[ "$DIAG_MODE" == diagnose-fla ]]; then
-        PIP_VERBOSE=1 FLA_NPU_BUILD_ARGS="-j4" \
+        PIP_VERBOSE=1 FLA_NPU_BUILD_ARGS="-j2" \
             python -u scripts/build_wheel.py --no-progress --wheel-dir /app
     else
         bash build.sh --soc=ascend950 --pkg --vendor_name=fla_npu --ops=chunk_kda_bwd_intra -j4
@@ -117,7 +117,7 @@ result = {
     'fla_commit': os.environ['FLA_COMMIT'],
     'soc': 'ascend950',
     'operator': 'all' if os.environ['DIAG_MODE'] == 'diagnose-fla' else 'chunk_kda_bwd_intra',
-    'jobs': 4,
+    'jobs': 2 if os.environ['DIAG_MODE'] == 'diagnose-fla' else 4,
     'container_exit_code': int(os.environ['DIAG_EXIT_CODE']),
     'compile_exit_code': read_int('compile-exit-code.txt'),
     'compile_seconds': read_int('compile-seconds.txt'),

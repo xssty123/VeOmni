@@ -1,5 +1,25 @@
 # Unified A3/A5 CANN 9.2.1 candidates
 
+## Full FLA two-job comparison (2026-11-03)
+
+Allowed diff from `655d012ff60359e0b67e22cba62fa7990b578c0c`: change only
+`diagnose-fla` compilation parallelism from four jobs to two, reflect that
+value in its result record, update the workflow step label and this document.
+Preserve CANN 9.2.1, pinned FLA source, runner, dependency preparation,
+monitoring, wheel/API checks, timeout and artifact handling. Single-op
+diagnostics and complete-image Docker builds still use four jobs.
+
+Comparison run
+[41607180980](https://github.com/xssty123/VeOmni/actions/runs/41607180980)
+failed with exit 137 before producing a validated wheel. The final host sample
+had 365 MiB available out of 15.58 GiB, and the container's recorded memory
+peak reached 14.25 GiB. The host diagnostic shell was killed and the runner
+received a shutdown signal. Final artifacts/kernel logs were unavailable;
+sampled OOM counters remained zero. Memory exhaustion is strongly suspected,
+but the final kernel kill decision is not proven. The successful single-op
+baseline below remains unchanged. This comparison changes only build
+parallelism to test whether the complete wheel can fit the hosted runner.
+
 ## Full FLA diagnostic (2026-11-03)
 
 Allowed diff from `115ace9e1f10c5bf9cccd9e3b3475bc497ac2c12`: extend the A5
