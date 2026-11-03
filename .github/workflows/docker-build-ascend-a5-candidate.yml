@@ -1,26 +1,19 @@
-name: docker-build-ascend-candidate
-run-name: CANN 9.2.1 ${{ inputs.target || 'a3' }} candidate (${{ github.ref_name }})
+name: docker-build-ascend-a5-candidate
+run-name: CANN 9.2.1 a5 candidate (${{ github.ref_name }})
 
 on:
   workflow_dispatch:
-    inputs:
-      target:
-        description: Ascend candidate target
-        type: choice
-        options: [a3, a5]
-        default: a3
-        required: true
 
 permissions:
   contents: read
 
 env:
-  TARGET: ${{ inputs.target || 'a3' }}
+  TARGET: a5
   IMAGE: ghcr.io/xssty123/veomni-ascend-candidate
   FLA_COMMIT: a7c608f2e3f828779ceeec1fcf155a6e37ede83c
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}-${{ inputs.target || 'a3' }}
+  group: ${{ github.workflow }}-${{ github.ref }}-a5
   cancel-in-progress: false
 
 jobs:
@@ -51,10 +44,6 @@ jobs:
         run: |
           set -euo pipefail
           test "$(git rev-parse HEAD)" = "$GITHUB_SHA"
-          case "$TARGET" in
-            a3|a5) ;;
-            *) echo "Unsupported target: $TARGET" >&2; exit 1 ;;
-          esac
           grep -Fq "git checkout --detach $FLA_COMMIT" "docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_${TARGET}"
 
       - name: Compute unique candidate tag

@@ -11,7 +11,7 @@ existing UT/ST branches, workflows and tests are not merged or changed yet.
 | --- | --- | --- |
 | A3 Dockerfile | `4e1ea454da0fc69ef1535189ee97b3626cb5f1a5`, CANN 9.2.0 | Add versioned 9.2.1 file; replace only base tag/header |
 | A5 Dockerfile | `83e80c73d292707ff3b5f5f8560198b5a7481a36`, CANN 9.2.1 | Carry over unchanged |
-| Candidate workflow | A3 workflow at `4e1ea454` | One manual entry point selecting `a3` or `a5`; target-specific paths, tag/cache/artifacts; CANN 9.2.1 throughout |
+| Candidate workflows | Unified workflow at `d5511f5e` | Separate A3 and A5 manual entry points, each with a fixed target; preserve target-specific paths, tag/cache/artifacts and CANN 9.2.1 |
 | Packaging smoke | A3/A5 scripts at `4e1ea454` | One script selecting the target distribution/artifacts; require CANN 9.2.1 and the matching Python version |
 | This document | Historical candidate records | Consolidate branch usage, validation boundaries and immutable evidence |
 
@@ -63,23 +63,31 @@ remain unvalidated until their own build and smoke records pass.
 The original `codex/a3-cann920-compare` and `codex/a5-cann921-main` branches
 remain historical references. Continue new Docker and future UT/ST work here.
 
-## Candidate workflow
+## Candidate workflows
 
-The workflow display name is **docker-build-ascend-candidate**. Its existing
-registered filename stays `docker-build-ascend-a5-candidate.yml` to retain the
-fork's manual dispatch entry without changing the default branch. The name in
-the Actions sidebar may still reflect the default branch's older A5 title.
-Select this development branch and choose the `target` input (`a3` by default).
-The workflow verifies one target per invocation, on a fresh runner by digest,
-and records separate target tags, cache scopes and artifact names.
+Select the target by choosing its independent workflow; neither entry has a
+`target` input:
 
-After the branch is pushed, explicit dispatch commands are:
+| Target | Workflow display name and filename |
+| --- | --- |
+| A3 | `docker-build-ascend-a3-candidate` / `docker-build-ascend-a3-candidate.yml` |
+| A5 | `docker-build-ascend-a5-candidate` / `docker-build-ascend-a5-candidate.yml` |
+
+Both workflows use the same development branch and packaging-smoke script.
+Each fixes its own `TARGET` internally, verifies the image on a fresh runner by
+digest, and retains separate tags, cache scopes and artifact names. The original
+formal A2/A3 build workflows are unchanged.
+
+Before manual dispatch, the workflow file must exist on the fork's default
+branch with `workflow_dispatch`. Register the new A3 candidate entry there when
+publishing these workflow changes; this local change does not modify fork `main`.
+After branch push and entry registration, use:
 
 ```bash
+gh workflow run docker-build-ascend-a3-candidate.yml --repo xssty123/VeOmni \
+  --ref codex/ascend-cann921
 gh workflow run docker-build-ascend-a5-candidate.yml --repo xssty123/VeOmni \
-  --ref codex/ascend-cann921 -f target=a3
-gh workflow run docker-build-ascend-a5-candidate.yml --repo xssty123/VeOmni \
-  --ref codex/ascend-cann921 -f target=a5
+  --ref codex/ascend-cann921
 ```
 
 Building and packaging smoke remain separate from target-hardware UT/ST.
@@ -96,7 +104,7 @@ No Quay publication, workflow dispatch or PR creation is part of this change.
 ## Local checks
 
 Passed repository-pinned Ruff 0.13.2 `make quality`, explicit smoke lint/format,
-strict YAML parsing, Bash syntax for all eight workflow run blocks and both
+strict YAML parsing, Bash syntax for each workflow's eight run blocks and both
 Dockerfiles' 19 RUN commands, embedded Python syntax and smoke CLI parsing.
 Mechanical comparison confirms the A3 base/header-only version change and the
 unchanged A5 Dockerfile. Local execution checks cover both target source/tag
