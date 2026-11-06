@@ -1,0 +1,20 @@
+# Register the manual A3 entry on the fork's default branch.
+# The full build, GHCR push and smoke workflow lives on codex/ascend-cann921.
+name: docker-build-ascend-a3-candidate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  select-candidate-branch:
+    if: github.repository == 'xssty123/VeOmni'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Require the candidate branch
+        run: |
+          echo '::error::Select codex/ascend-cann921 under "Use workflow from" to build the A3 CANN 9.2.1 candidate. This main-branch file only registers the manual entry.'
+          exit 1
