@@ -1,0 +1,96 @@
+# # Tests layout
+
+name: A5 local NPU unit tests
+
+on: workflow_dispatch
+
+# Cancel jobs on the same ref if a new one is triggered
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+# Declare permissions just read content.
+permissions:
+  contents: read
+
+jobs:
+  npu_unit_tests:
+    name: VeOmni A5 local UT
+    runs-on: [self-hosted, linux, ARM64]
+    timeout-minutes: 360
+    container:
+      image: ghcr.io/xssty123/veomni-ascend-candidate@sha256:369b251a90d189051d0f95038345440869f105d6753395958223a11ed89aee95
+      env:
+        ASCEND_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
+        ASCEND_RT_VISIBLE_DEVICES: 0,1,2,3,4,5,6,7
+      volumes:
+      - /home/z00832855/latest_proxy:/tmp/latest_proxy:ro
+      - /home:/home
+      - /root/ascend:/root/ascend
+      - /etc/ascend_install.info:/etc/ascend_install.info
+      - /etc/hccn.conf:/etc/hccn.conf
+      - /usr/bin/msnpureport:/usr/bin/msnpureport
+      - /usr/local/bin/npu-smi:/usr/local/bin/npu-smi
+      - /usr/local/sbin/npu-smi:/usr/local/sbin/npu-smi
+      - /usr/local/Ascend/driver:/usr/local/Ascend/driver
+      - /usr/local/dcmi:/usr/local/dcmi
+      - /usr/lib64/libnl-genl-3.so.200:/usr/lib64/libnl-genl-3.so.200
+      - /data_2:/data_2
+      - /data_1:/data_1
+      - /root/.cache/:/root/.cache/
+      - /autotest:/autotest
+      - /usr/lib64/libnl-3.so.200:/usr/lib64/libnl-3.so.200
+      - /home/data:/home/data
+      - /mnt:/mnt
+      - /pta_data:/pta_data
+      - /usr/lib64/urma:/usr/lib64/urma
+      - /data:/data
+      - /data1:/data1
+      - /data_euleros/data1:/data_euleros/data1
+      - /usr/lib64/liburma_common.so:/usr/lib64/liburma_common.so
+      - /usr/lib64/liburma_common.so.0:/usr/lib64/liburma_common.so.0
+      - /usr/lib64/liburma_common.so.0.0.1:/usr/lib64/liburma_common.so.0.0.1
+      - /usr/lib64/liburma.so:/usr/lib64/liburma.so
+      - /usr/lib64/liburma.so.0:/usr/lib64/liburma.so.0
+      - /usr/lib64/liburma.so.0.0.3:/usr/lib64/liburma.so.0.0.3
+      - /usr/lib64/libummu.so.1:/usr/lib64/libummu.so.1
+      - /usr/lib64/libummu.so.1.0.5:/usr/lib64/libummu.so.1.0.5
+      - /dev/log:/dev/log
+      options: --privileged --ipc=host --shm-size=720g --device=/dev/hisi_hdc --device=/dev/davinci_manager --device=/dev/davinci0
+        --device=/dev/davinci1 --device=/dev/davinci2 --device=/dev/davinci3 --device=/dev/davinci4 --device=/dev/davinci5
+        --device=/dev/davinci6 --device=/dev/davinci7 --device=/dev/uburma --device=/dev/ummu
+    env:
+      NO_PROXY: "localhost,127.0.0.1,hf-mirror.com"
+      HF_ENDPOINT: "https://hf-mirror.com"
+      HF_HUB_ENABLE_HF_TRANSFER: "0" # This is more stable
+      # Shared NFS paths (see workflow container.volumes and
+      # github_runner/group_vars/all.yml::veomni_ci_nfs_*).
+      CI_HF_MODELS_DIR: "/home/z00832855/ci/ut/models"
+      CI_SAMPLES_DIR: "/home/z00832855/ci/ut/samples"
+      CI_DATASET_DIR: "/home/z00832855/ci/ut/datasets"
+      # uv's default 30s timeout fires intermittently on the CN runners
+      # while pulling large wheels (e.g. torch-npu, virtualenv); bump to
+      # 5 min so a slow link doesn't fail the whole sync.
+      UV_HTTP_TIMEOUT: "300"
+      # CANN 9.0.0: let OS assign HCCL ports (auto) to avoid port exhaustion
+      # and counter overflow to 65536 when many sub-communicators run sequentially.
+      HCCL_HOST_SOCKET_PORT_RANGE: "auto"
+      HCCL_NPU_SOCKET_PORT_RANGE: "auto"
+
+    steps:
+      - name: Load server proxy
+        shell: bash
+        run: |
+          if [[ -r /tmp/latest_proxy ]]; then
+            proxy=$(cat /tmp/latest_proxy)
+            for name in HTTP_PROXY HTTPS_PROXY http_proxy https_proxy; do
+              printf '%s=%s\n' "$name" "$proxy" >> "$GITHUB_ENV"
+            done
+          fi
+      - uses: actions/checkout@v4
+      - name: Restore candidate environment
+        shell: bash
+        run: bash scripts/ci/npu/setup_candidate.sh a5
+      - name: Run candidate unit
+        shell: bash
+        run: bash scripts/ci/npu/run_candidate.sh a5 unit

@@ -437,5 +437,126 @@
       "-x",
       "tests/distributed/test_fsdp_equivalence.py"
     ]
+  },
+  {
+    "name": "npu-muon-smoke",
+    "suite": "unit",
+    "conditional": false,
+    "args": [
+      "-v",
+      "-s",
+      "-x",
+      "tests/optim/test_muon_fsdp2_smoke_npu.py"
+    ]
+  },
+  {
+    "name": "npu-lora-ep",
+    "suite": "unit",
+    "conditional": false,
+    "args": [
+      "-v",
+      "-s",
+      "-x",
+      "tests/lora/test_moe_lora_ep2_npu.py"
+    ]
+  },
+  {
+    "name": "npu-gdn-ulysses",
+    "suite": "unit",
+    "conditional": false,
+    "args": [
+      "-v",
+      "-s",
+      "-x",
+      "tests/parallel/ulysses/test_qwen3_5_gated_deltanet_ulysses_npu.py"
+    ]
+  },
+  {
+    "name": "npu-muon-shards",
+    "suite": "unit",
+    "conditional": false,
+    "args": [
+      "-v",
+      "-s",
+      "-x",
+      "tests/distributed/test_muon_zero_comm_shard.py"
+    ]
+  },
+  {
+    "name": "npu-lora-eager",
+    "suite": "unit",
+    "conditional": false,
+    "args": [
+      "-v",
+      "-s",
+      "-x",
+      "tests/lora/test_moe_lora_eager.py"
+    ]
+  },
+  {
+    "name": "npu-lora-trainer",
+    "suite": "unit",
+    "conditional": false,
+    "args": [
+      "-v",
+      "-s",
+      "-x",
+      "tests/lora/test_moe_lora_trainer.py"
+    ]
+  },
+  {
+    "name": "npu-lora-target-mapping",
+    "suite": "unit",
+    "conditional": false,
+    "args": [
+      "-v",
+      "-s",
+      "-x",
+      "tests/lora/test_target_mapping.py"
+    ]
+  },
+  {
+    "name": "npu-muon-unit",
+    "suite": "unit",
+    "conditional": false,
+    "args": [
+      "-v",
+      "-s",
+      "-x",
+      "tests/optim/test_muon_unit.py"
+    ]
+  },
+  {
+    "name": "npu-muon-dense-parity",
+    "suite": "unit",
+    "conditional": false,
+    "args": [
+      "-v",
+      "-s",
+      "-x",
+      "tests/optim/test_muon_fsdp2_parity.py::test_dense_parity_4gpu"
+    ]
+  },
+  {
+    "name": "npu-optimizer-vlm",
+    "suite": "unit",
+    "conditional": false,
+    "args": [
+      "-v",
+      "-s",
+      "-x",
+      "tests/optim/test_optimizer_vlm_param_groups.py"
+    ]
+  },
+  {
+    "name": "npu-rank0-broadcast",
+    "suite": "unit",
+    "conditional": false,
+    "args": [
+      "-v",
+      "-s",
+      "-x",
+      "tests/utils/test_rank0_load_and_broadcast_weights.py"
+    ]
   }
 ]

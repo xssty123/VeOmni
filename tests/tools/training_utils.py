@@ -137,6 +137,11 @@ _GPU_PER_MODEL_OVERRIDES: Dict[str, Dict[str, str]] = {
 
 def _npu_overrides(model_name: Optional[str]) -> Dict[str, str]:
     merged = dict(_NPU_OPS_DEFAULTS)
+    gdn_impl = os.environ.get("VEOMNI_TEST_GDN_IMPLEMENTATION", "triton")
+    if gdn_impl not in ("triton", "fla_npu"):
+        raise ValueError(f"Unsupported NPU test GDN implementation: {gdn_impl}")
+    if model_name in ("qwen3_5", "qwen3_5_moe"):
+        merged["chunk_gated_delta_rule_implementation"] = gdn_impl
     if model_name is not None:
         merged.update(_NPU_PER_MODEL_OVERRIDES.get(model_name, {}))
     return merged

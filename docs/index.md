@@ -40,6 +40,7 @@ usage/trainer.md
 usage/agent_workflow.md
 usage/hdfs_fuse_patch.md
 testing.md
+testing-npu-cann921.md
 ```
 
 ```{toctree}

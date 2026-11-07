@@ -153,6 +153,24 @@ require historical timings.
 
 ---
 
+## A3/A5 candidate UT/ST
+
+The CANN 9.2.1 candidate entry points are `npu_unit_tests_a3.yml`,
+`npu_e2e_test_a3.yml`, `npu_unit_tests_a5.yml`, and `npu_e2e_test_a5.yml`
+at the repository root. They are local `act -W` workflows, not automatic
+GitHub workflows. Existing A2 runner labels and images are unchanged.
+
+Both targets restore the image's retained wheels into the project `.venv`
+after `uv sync`, then run the common accelerator scheduler. UT includes
+NPU model/loader parity, return-log-probability integration, MoE-LoRA EP,
+Muon FSDP2, and packed GDN SP forward/backward coverage. ST runs the shared
+E2E and FSDP suites with native Triton, followed by Qwen3.5 dense/MoE with
+`fla_npu`. Candidate preflight requires eight visible NPUs and fails if the
+FLA 26.10 target distribution/API is missing. A5 alone sets
+`HCCL_OP_EXPANSION_MODE=AICPU_CacheDisable`.
+
+See [candidate setup, image pins and acceptance records](testing-npu-cann921.md).
+
 ## Shared Test Infrastructure (`tests/tools/`)
 
 All shared, cross-cutting utilities live in `tests/tools/`:

@@ -187,3 +187,20 @@ def test_make_eager_ops_config_covers_every_kernel_field():
     for field in fields(OpsImplementationConfig):
         expected = "none" if field.name == "qat_implementation" else "eager"
         assert getattr(selection, field.name) == expected, field.name
+
+
+@pytest.mark.parametrize("implementation", ["triton", "fla_npu"])
+@pytest.mark.parametrize("family", ["qwen3_5", "qwen3_5_moe"])
+def test_npu_candidate_gdn_override_reaches_training_command(monkeypatch, implementation, family):
+    monkeypatch.setenv("VEOMNI_TEST_GDN_IMPLEMENTATION", implementation)
+    monkeypatch.setattr(training_utils, "get_device_type", lambda: "npu")
+    expected = f"--model.ops_implementation.chunk_gated_delta_rule_implementation={implementation}"
+    assert expected in training_utils.resolve_ops_overrides(family)
+    assert training_utils.make_npu_ops_config(family).chunk_gated_delta_rule_implementation == implementation
+
+
+def test_npu_candidate_gdn_override_is_scoped(monkeypatch):
+    monkeypatch.setenv("VEOMNI_TEST_GDN_IMPLEMENTATION", "fla_npu")
+    assert training_utils.make_npu_ops_config("qwen3").chunk_gated_delta_rule_implementation == "triton"
+    monkeypatch.setattr(training_utils, "get_device_type", lambda: MOE_TRITON_DEVICE_TYPES[0])
+    assert not any("gated_delta_rule" in arg for arg in training_utils.resolve_ops_overrides("qwen3_5"))

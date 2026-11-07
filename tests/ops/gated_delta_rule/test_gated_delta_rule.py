@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import ast
+import os
 import sys
 from importlib import import_module
 from pathlib import Path
@@ -50,6 +51,10 @@ from veomni.ops import resolve_op
 from veomni.ops.registry import OpEntry
 from veomni.utils.device import IS_CUDA_AVAILABLE, IS_MLU_AVAILABLE, IS_NPU_AVAILABLE
 
+
+_CANDIDATE_FLA = pytest.mark.skipif(
+    os.environ.get("VEOMNI_NPU_TARGET") not in ("a3", "a5"), reason="A3/A5 FLA 26.10 candidate"
+)
 
 _FLA_DEVICE_CASES = (
     pytest.param("cuda", marks=pytest.mark.skipif(not IS_CUDA_AVAILABLE, reason="FLA needs a CUDA GPU")),
@@ -649,6 +654,9 @@ def test_chunk_gated_delta_rule_fla_matches_eager(device):
 @pytest.mark.parametrize(
     ("impl", "seq", "dim", "repeats", "packed"),
     (
+        pytest.param("fla_npu", 64, 128, 1, False, id="fla-npu-full-chunk", marks=_CANDIDATE_FLA),
+        pytest.param("fla_npu", 77, 128, 5, False, id="fla-npu-partial-repeated", marks=_CANDIDATE_FLA),
+        pytest.param("fla_npu", 128, 128, 1, True, id="fla-npu-packed", marks=_CANDIDATE_FLA),
         pytest.param("triton", 64, 64, 1, False, id="triton-small-head"),
         pytest.param("triton", 77, 128, 20, False, id="triton-repeated-partial-chunk"),
         pytest.param("triton", 77, 256, 20, False, id="triton-repeated-partial-wide-head"),
@@ -657,7 +665,7 @@ def test_chunk_gated_delta_rule_fla_matches_eager(device):
     ),
 )
 def test_chunk_gated_delta_rule_npu_matches_eager_forward_and_backward(impl, seq, dim, repeats, packed):
-    """Cover Triton small heads, packed inputs, and repeated backwards."""
+    """Cover native Triton and FLA 26.10 packed inputs and repeated backwards."""
     _require_npu_gdr_dependencies()
     eager = resolve_op("chunk_gated_delta_rule", "standard", "eager").wrapper
     other = resolve_op("chunk_gated_delta_rule", "standard", impl).wrapper
