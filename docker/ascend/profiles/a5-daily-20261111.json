@@ -1,0 +1,55 @@
+{
+  "name": "a5-daily-20261111",
+  "target": "a5",
+  "platform": "linux/arm64",
+  "architecture": "aarch64",
+  "python": [
+    3,
+    12
+  ],
+  "upstream_base_commit": "e5b027cc6986337025c3afc27c54a0864a37e3ac",
+  "dockerfile": "docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5_daily20261111",
+  "base_image": "quay.io/ascend/cann:9.2.1-950-ubuntu22.04-py3.12@sha256:1fa0e2b6754034d9683c5718dfc12a666fc340dafb15966bdf4641ed1045c1b1",
+  "cann": "9.2.1",
+  "versions": {
+    "torch": "2.10.0",
+    "torch-npu": "2.10.0.post7",
+    "triton": "3.6.0",
+    "triton-ascend": "3.6.0.post2",
+    "transformers": "5.16.1",
+    "torchvision": "0.25.0",
+    "torchaudio": "2.10.0",
+    "torchcodec": "0.10.0a0",
+    "pyarrow": "21.0.0",
+    "pandas": "2.3.2",
+    "pytest": "7.4.4",
+    "expecttest": "0.3.0",
+    "rich": "14.2.0"
+  },
+  "fla": {
+    "distribution": "flash-linear-attention-npu-a5",
+    "version": "0.dev20261111+main.4fc94af",
+    "filename": "flash_linear_attention_npu_a5-0.dev20261111+main.4fc94af-py3-none-manylinux_2_34_aarch64.whl",
+    "url": "https://mirrors.huaweicloud.com/ascend/repos/pypi/nightly/flash-linear-attention-npu-a5/flash_linear_attention_npu_a5-0.dev20261111+main.4fc94af-py3-none-manylinux_2_34_aarch64.whl",
+    "sha256": "c20fad3d8d71119abbbfb3f886d34b5a497f6064476b5222ce3c97e922ced691",
+    "source_commit": "4fc94af96fc181274cdfc5c1760a2bb0dc9d76f2",
+    "source_provenance": "Filename prefix resolved via publisher GitHub commit API; no embedded full-commit attestation. SHA256 independently measured from official mirror download.",
+    "compiler_version": "9.1.0"
+  },
+  "triton_ascend": {
+    "filename": "triton_ascend-3.6.0.post2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl",
+    "url": "https://mirrors.huaweicloud.com/ascend/repos/pypi/triton-ascend/triton_ascend-3.6.0.post2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl",
+    "sha256": "66d8c315fcd1ab619f38c6250b3d28868254c606b653c098d796f707da4b5400"
+  },
+  "fla_checker": {
+    "url": "https://raw.githubusercontent.com/flashserve/flash-linear-attention-npu/4fc94af96fc181274cdfc5c1760a2bb0dc9d76f2/scripts/check_packaged_wheel_api.py",
+    "sha256": "98dfcaa340ba6f1bd098711eadab8db18f589cc33fd95897096e35bc98fa7ab2"
+  },
+  "torchcodec": {
+    "release": "v0.10.0",
+    "source_commit": "0b261b98080925f2b709712a5491a1e8dd817065",
+    "route": "Source build with the existing Ascend installer; no Linux ARM64 wheel found in PyPI or official PyTorch CPU index."
+  },
+  "dependency_conflicts": "Record pip check output and exit status; not a separate packaging gate.",
+  "hardware_acceptance": "Not run. Require uv-UT, uv-ST, image-UT and image-ST from one pinned latest upstream main after host allocation."
+}

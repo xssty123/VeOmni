@@ -59,3 +59,13 @@ docker build -f docker/cuda/Dockerfile.cu130 \
   and [`docker-build-ascend-a3.yml`](../.github/workflows/docker-build-ascend-a3.yml)
   build and push a fixed set of `ascend/` Dockerfiles on merge to `main`; check
   those workflows before renaming or removing a file under `ascend/`.
+
+## A5 daily-wheel candidate
+
+The experimental ARM64 A5 candidate uses
+`ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5_daily20261111` and the
+manual fork-only `docker-build-ascend-a5-candidate.yml` workflow. It installs a
+specific checksum-verified FLA daily wheel and builds TorchCodec separately.
+See the [A5 candidate guide](../docs/hardware_support/AscendDockerUsage/build_a5_docker.md)
+for exact versions, build commands, smoke evidence and four-lane hardware acceptance.
+It is not a published Quay release; build and NPU validation remain separate.

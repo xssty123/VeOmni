@@ -1,0 +1,118 @@
+# A5 / ARM64, CANN 9.2.1, Ubuntu 22.04 and shared Python 3.12.
+# torch-npu source: https://ascend.devcloud.huaweicloud.com/pypi/simple/torch-npu/
+FROM quay.io/ascend/cann:9.2.1-950-ubuntu22.04-py3.12@sha256:1fa0e2b6754034d9683c5718dfc12a666fc340dafb15966bdf4641ed1045c1b1
+
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+USER root
+
+ARG PIP_INDEX=https://pypi.org/simple
+ARG APT_SOURCE=http://ports.ubuntu.com/ubuntu-ports/
+
+ENV MAX_JOBS=16
+ENV PIP_ROOT_USER_ACTION=ignore
+ENV OMP_NUM_THREADS=4
+ENV OPENBLAS_NUM_THREADS=1
+ENV MKL_NUM_THREADS=1
+ENV NUMEXPR_NUM_THREADS=1
+
+RUN python -c "import platform, sys; assert platform.machine() == 'aarch64'; assert sys.version_info[:2] == (3, 12)" && \
+    test -f /usr/local/Ascend/ascend-toolkit/set_env.sh
+
+RUN echo "Setting timezone to CST (China Standard Time)..." && \
+    ln -sf /usr/share/zoneinfo/Asia/Shanghai /etc/localtime && \
+    echo "Asia/Shanghai" > /etc/timezone
+
+# Preserve the ARM Ubuntu mirror override used by the A3 Dockerfile.
+RUN if [ "${APT_SOURCE}" != "http://ports.ubuntu.com/ubuntu-ports/" ]; then \
+    cp /etc/apt/sources.list /etc/apt/sources.list.bak && \
+    sed -E -i "s#https?://[^[:space:]]+/ubuntu-ports/?#${APT_SOURCE}#g" /etc/apt/sources.list; \
+    fi
+
+# Keep the existing ARM build tools for TorchCodec. FLA uses a prebuilt wheel.
+# binutils provides readelf for the pinned packaged-wheel API checker.
+RUN apt-get update -y && \
+    DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+        gcc g++ cmake libnuma-dev sudo wget git curl jq vim build-essential ssh ca-certificates ffmpeg pkg-config gawk pciutils binutils patch && \
+    apt-get clean && \
+    rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/* && \
+    pip install --upgrade pip setuptools packaging && \
+    pip cache purge
+
+RUN chmod +x /usr/bin/make /usr/bin/gmake /usr/bin/cc /usr/bin/c++
+
+RUN pip install --upgrade pip setuptools packaging --no-cache-dir --progress-bar off && \
+    pip cache purge
+
+RUN pip config set global.index-url "${PIP_INDEX}" && \
+    pip config set global.no-cache-dir "true" && \
+    pip config --user set global.progress_bar off && \
+    python -m pip install --upgrade pip
+
+RUN pip3 install --no-cache-dir -U pip setuptools requests
+
+# The uv acceptance lane creates its own environment from upstream YAML.
+COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /uvx /bin/
+
+WORKDIR /app
+COPY . .
+
+# Match the existing ARM installation path; pip does not install uv groups.
+RUN pip install -e ".[npu_aarch64]" "transformers==5.16.1" && \
+    python -c "import transformers; assert transformers.__version__ == '5.16.1'"
+
+# Preserve the ARM parquet workaround from the historical Dockerfile.
+RUN pip install "pyarrow==21.0.0" "pandas==2.3.2"
+
+# Install image-lane test tools from the upstream lockfile before runtime overrides.
+RUN python -m pip install "pytest==7.4.4" "expecttest==0.3.0" "rich==14.2.0"
+
+# Preserve the ARM extra, then override only the selected torch-npu wheel.
+RUN python -m pip download --no-deps --only-binary=:all: --dest /app \
+        --index-url https://ascend.devcloud.huaweicloud.com/pypi/simple/ "torch-npu==2.10.0.post7" && \
+    python -m pip install --no-deps --force-reinstall /app/torch_npu-2.10.0.post7-*.whl && \
+    python -m pip install pybind11 wheel ninja
+
+# Base Triton must be installed before the Ascend overlay. Preserve the extra's
+# dependency versions with --no-deps; report metadata conflicts in smoke.
+RUN python -m pip uninstall -y triton triton-ascend && \
+    python -m pip download --no-deps --only-binary=:all: --dest /app "triton==3.6.0" && \
+    python -m pip install --no-deps /app/triton-3.6.0-*.whl && \
+    curl --fail --location --retry 3 "https://mirrors.huaweicloud.com/ascend/repos/pypi/triton-ascend/triton_ascend-3.6.0.post2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" -o "/app/triton_ascend-3.6.0.post2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" && \
+    echo "66d8c315fcd1ab619f38c6250b3d28868254c606b653c098d796f707da4b5400  /app/triton_ascend-3.6.0.post2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" | sha256sum --check - && \
+    python -m pip install --no-deps --force-reinstall "/app/triton_ascend-3.6.0.post2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl" && \
+    source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
+    python -c "from triton._C.libtriton import ascend"
+
+# Install the exact MAIN daily A5 wheel. No FLA source build or floating selector.
+# The SHA256 was measured independently from the publisher's mirror; the filename
+# source prefix maps to 4fc94af96fc181274cdfc5c1760a2bb0dc9d76f2, not a signed build attestation.
+RUN curl --fail --location --retry 3 "https://mirrors.huaweicloud.com/ascend/repos/pypi/nightly/flash-linear-attention-npu-a5/flash_linear_attention_npu_a5-0.dev20261111+main.4fc94af-py3-none-manylinux_2_34_aarch64.whl" -o "/app/flash_linear_attention_npu_a5-0.dev20261111+main.4fc94af-py3-none-manylinux_2_34_aarch64.whl" && \
+    echo "c20fad3d8d71119abbbfb3f886d34b5a497f6064476b5222ce3c97e922ced691  /app/flash_linear_attention_npu_a5-0.dev20261111+main.4fc94af-py3-none-manylinux_2_34_aarch64.whl" | sha256sum --check - && \
+    python -m zipfile -t "/app/flash_linear_attention_npu_a5-0.dev20261111+main.4fc94af-py3-none-manylinux_2_34_aarch64.whl" && \
+    python -m pip uninstall -y fla-npu flash-linear-attention-npu flash-linear-attention-npu-a2 flash-linear-attention-npu-a3 flash-linear-attention-npu-a5 && \
+    python -m pip install --no-deps "/app/flash_linear_attention_npu_a5-0.dev20261111+main.4fc94af-py3-none-manylinux_2_34_aarch64.whl" && \
+    curl --fail --location --retry 3 "https://raw.githubusercontent.com/flashserve/flash-linear-attention-npu/4fc94af96fc181274cdfc5c1760a2bb0dc9d76f2/scripts/check_packaged_wheel_api.py" -o /app/check_packaged_wheel_api.py && \
+    echo "98dfcaa340ba6f1bd098711eadab8db18f589cc33fd95897096e35bc98fa7ab2  /app/check_packaged_wheel_api.py" | sha256sum --check - && \
+    source /usr/local/Ascend/ascend-toolkit/set_env.sh && \
+    TORCH_DEVICE_BACKEND_AUTOLOAD=0 python /app/check_packaged_wheel_api.py
+
+# No compatible TorchCodec v0.10.0 Linux ARM64 wheel was found on 2026-11-11.
+# Preserve the upstream Ascend source-build procedure, pinned to the tag commit.
+RUN git clone https://github.com/meta-pytorch/torchcodec.git /app/torchcodec
+WORKDIR /app/torchcodec
+RUN git checkout --detach 0b261b98080925f2b709712a5491a1e8dd817065
+ENV CANN_PATH=/usr/local/Ascend
+RUN cp ../docs/get_started/installation/install_torchcodec_Ascend.sh . && \
+    chmod +x install_torchcodec_Ascend.sh && \
+    bash install_torchcodec_Ascend.sh ${CANN_PATH}/ascend-toolkit/set_env.sh
+
+WORKDIR /app
+
+# Assert all selected versions only after the final installation step. The v0.10.0
+# source tag reports 0.10.0a0 plus its git suffix; keep that distinct from a wheel.
+RUN python docker/ascend/tests/check_daily_build_contract.py --installed && \
+    python -m pip freeze > /app/a5-image-requirements.txt && \
+    sha256sum /app/torch_npu-2.10.0.post7-*.whl /app/triton-3.6.0-*.whl \
+        /app/triton_ascend-3.6.0.post2-cp312-cp312-manylinux_2_27_aarch64.manylinux_2_28_aarch64.whl /app/flash_linear_attention_npu_a5-0.dev20261111+main.4fc94af-py3-none-manylinux_2_34_aarch64.whl /app/check_packaged_wheel_api.py > /app/a5-ci-wheels.sha256
+
+CMD ["/bin/bash"]
