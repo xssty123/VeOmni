@@ -21,16 +21,18 @@ jobs:
       matrix:
         include:
           - target: a2
+            quay_tag: v0.1.12-cann9.2.1-torch_npu2.10.0.post7-910b-ubuntu22.04-py3.12-veomni
             digest: sha256:59701c8721756b2fe9a2773bc6dbf238b60a2f60353e0d94235968b0084cd7ff
             platforms: linux/amd64,linux/arm64
             source_run: '43405533518'
           - target: a3
+            quay_tag: v0.1.12-cann9.2.1-torch_npu2.10.0.post7-a3-ubuntu22.04-py3.12-veomni
             digest: sha256:89fa9e4515070c0fb54c210048cbcd7a39d8076a0a59d36b38862f4be0309976
             platforms: linux/arm64
             source_run: '43405533396'
     env:
       SOURCE: ghcr.io/zpl1n/veomni@${{ matrix.digest }}
-      DESTINATION: quay.io/ascend/veomni:cann921-${{ matrix.target }}-29eeb215-candidate
+      DESTINATION: quay.io/ascend/veomni:${{ matrix.quay_tag }}
       EXPECTED_DIGEST: ${{ matrix.digest }}
       EXPECTED_PLATFORMS: ${{ matrix.platforms }}
       EXPECTED_COMMIT: 29eeb215bf3a2e6ed73a5345c00d046d0418a10e
