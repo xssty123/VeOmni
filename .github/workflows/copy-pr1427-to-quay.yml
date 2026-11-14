@@ -1,0 +1,134 @@
+name: Copy PR 1427 candidates to Quay
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: copy-pr1427-to-quay
+  cancel-in-progress: false
+
+jobs:
+  copy:
+    if: github.repository == 'xssty123/VeOmni' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: quay-production
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: a2
+            digest: sha256:59701c8721756b2fe9a2773bc6dbf238b60a2f60353e0d94235968b0084cd7ff
+            platforms: linux/amd64,linux/arm64
+            source_run: '43405533518'
+          - target: a3
+            digest: sha256:89fa9e4515070c0fb54c210048cbcd7a39d8076a0a59d36b38862f4be0309976
+            platforms: linux/arm64
+            source_run: '43405533396'
+    env:
+      SOURCE: ghcr.io/zpl1n/veomni@${{ matrix.digest }}
+      DESTINATION: quay.io/ascend/veomni:cann921-${{ matrix.target }}-29eeb215-candidate
+      EXPECTED_DIGEST: ${{ matrix.digest }}
+      EXPECTED_PLATFORMS: ${{ matrix.platforms }}
+      EXPECTED_COMMIT: 29eeb215bf3a2e6ed73a5345c00d046d0418a10e
+      SOURCE_RUN: ${{ matrix.source_run }}
+      REGISTRY_AUTH_FILE: ${{ runner.temp }}/quay-auth.json
+    steps:
+      - name: Install registry copy tool
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+
+      - name: Verify source identity and architectures
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/zpl1n/VeOmni/actions/runs/$SOURCE_RUN" > source-run.json
+          skopeo inspect --raw "docker://$SOURCE" > source-manifest.json
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          run = json.loads(Path('source-run.json').read_text())
+          assert run['head_sha'] == os.environ['EXPECTED_COMMIT']
+          assert run['status'] == 'completed' and run['conclusion'] == 'success'
+          assert run['run_attempt'] == 1
+          raw = Path('source-manifest.json').read_bytes()
+          assert 'sha256:' + hashlib.sha256(raw).hexdigest() == os.environ['EXPECTED_DIGEST']
+          manifest = json.loads(raw)
+          platforms = []
+          for child in manifest['manifests']:
+              platform = child['platform']
+              if platform['os'] == 'unknown':
+                  continue
+              platforms.append(platform['os'] + '/' + platform['architecture'])
+              ref = 'docker://ghcr.io/zpl1n/veomni@' + child['digest']
+              config = json.loads(subprocess.check_output(['skopeo', 'inspect', '--config', ref]))
+              assert config['config']['Labels']['org.opencontainers.image.revision'] == os.environ['EXPECTED_COMMIT']
+          assert sorted(platforms) == sorted(os.environ['EXPECTED_PLATFORMS'].split(',')), platforms
+          print('Verified source digest, revision and platforms:', platforms)
+          PY
+
+      - name: Log in to Quay with existing Actions secrets
+        env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$QUAY_PASSWORD" | skopeo login --username "$QUAY_USERNAME" --password-stdin quay.io
+
+      - name: Require a new or already matching destination
+        id: destination
+        run: |
+          set -euo pipefail
+          if skopeo inspect --raw "docker://$DESTINATION" > existing-manifest.json 2> inspect-error.txt; then
+            digest="sha256:$(sha256sum existing-manifest.json | cut -d' ' -f1)"
+            [[ "$digest" == "$EXPECTED_DIGEST" ]] || { echo 'Refusing to replace a different existing image'; exit 1; }
+            echo 'copy_needed=false' >> "$GITHUB_OUTPUT"
+          elif grep -Eqi 'manifest unknown|name unknown' inspect-error.txt; then
+            echo 'copy_needed=true' >> "$GITHUB_OUTPUT"
+          else
+            cat inspect-error.txt >&2
+            exit 1
+          fi
+
+      - name: Copy every architecture without rebuilding
+        id: copy
+        if: steps.destination.outputs.copy_needed == 'true'
+        continue-on-error: true
+        run: skopeo copy --all --preserve-digests --retry-times 3 "docker://$SOURCE" "docker://$DESTINATION"
+
+      - name: Verify destination even after a copy failure
+        if: ${{ always() && steps.destination.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          skopeo inspect --raw "docker://$DESTINATION" > destination-manifest.json
+          digest="sha256:$(sha256sum destination-manifest.json | cut -d' ' -f1)"
+          [[ "$digest" == "$EXPECTED_DIGEST" ]]
+          cmp source-manifest.json destination-manifest.json
+          python3 - <<'PY'
+          import hashlib, json, os, subprocess
+          from pathlib import Path
+          for child in json.loads(Path('destination-manifest.json').read_text())['manifests']:
+              ref = 'docker://quay.io/ascend/veomni@' + child['digest']
+              raw = subprocess.check_output(['skopeo', 'inspect', '--raw', ref])
+              assert 'sha256:' + hashlib.sha256(raw).hexdigest() == child['digest']
+          print('Destination index and all child manifests match the source.')
+          PY
+          {
+            echo "## Copied candidate image"
+            echo "- Source: \`$SOURCE\`"
+            echo "- Destination: \`$DESTINATION\`"
+            echo "- Digest: \`$digest\`"
+            echo "- Platforms: \`$EXPECTED_PLATFORMS\`"
+            echo "- Source build: https://github.com/zpl1n/VeOmni/actions/runs/$SOURCE_RUN"
+            echo '- Rebuilt: no'
+            echo '- NPU UT/ST: not verified by this copy workflow'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary registry credentials
+        if: always()
+        run: rm -f "$REGISTRY_AUTH_FILE"
