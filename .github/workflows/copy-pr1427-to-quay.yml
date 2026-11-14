@@ -35,7 +35,7 @@ jobs:
       EXPECTED_PLATFORMS: ${{ matrix.platforms }}
       EXPECTED_COMMIT: 29eeb215bf3a2e6ed73a5345c00d046d0418a10e
       SOURCE_RUN: ${{ matrix.source_run }}
-      REGISTRY_AUTH_FILE: ${{ runner.temp }}/quay-auth.json
+      REGISTRY_AUTH_FILE: /tmp/pr1427-quay-auth.json
     steps:
       - name: Install registry copy tool
         run: |
