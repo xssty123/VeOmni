@@ -14,6 +14,24 @@ Two tag schemes coexist on quay.io:
 > triton-ascend and fla_npu GDN stack. General-purpose Dockerfiles remain
 > available for the legacy tags.
 
+## CANN 9.2.1
+
+These are previously published artifacts, not outputs of rebuilding this
+branch. A tag's availability does not establish NPU acceptance or a clean
+vulnerability scan. Use the recorded digest to identify an exact artifact.
+
+| Product tag | Platform | Manifest digest |
+| --- | --- | --- |
+| `v0.1.12-cann9.2.1-torch_npu2.10.0.post7-910b-ubuntu22.04-py3.12-veomni` | AMD64 + ARM64 | `sha256:59701c8721756b2fe9a2773bc6dbf238b60a2f60353e0d94235968b0084cd7ff` |
+| `v0.1.12-cann9.2.1-torch_npu2.10.0.post7-a3-ubuntu22.04-py3.12-veomni` | ARM64 | `sha256:89fa9e4515070c0fb54c210048cbcd7a39d8076a0a59d36b38862f4be0309976` |
+| `v0.1.12-cann9.2.1-torch_npu2.10.0.post7-a5-ubuntu22.04-py3.12-veomni` | ARM64 | `sha256:369b251a90d189051d0f95038345440869f105d6753395958223a11ed89aee95` |
+
+Prefix tags with `quay.io/ascend/veomni:` when pulling. A2/A3 were built from
+PR #1427 at `29eeb215bf3a2e6ed73a5345c00d046d0418a10e`; the A5 artifact uses
+older VeOmni source and the Triton 3.6.0 stack. See the
+[A2](build_a2_docker.md), [A3](build_a3_docker.md)
+and [A5 recipe and provenance](build_a5_docker.md) guides.
+
 ## CANN 9.1.0
 
 ### Product-based tags

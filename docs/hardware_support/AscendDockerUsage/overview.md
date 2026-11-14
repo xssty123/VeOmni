@@ -32,7 +32,7 @@ All image tags follow this pattern:
 | `veomni-version` | `v0.1.11` | VeOmni release tag |
 | `cann` | `9.1.0` | CANN version |
 | `torch_npu` | `2.10.0.post2` | torch-npu version |
-| `chip-series` | `910b`, `a3` | Target Ascend chip series |
+| `chip-series` | `910b`, `a3`, `a5` | Target Ascend chip series |
 | `os` | `ubuntu22.04` | Base operating system |
 | `python` | `py3.12` | Python version |
 | `veomni` | `-veomni` | Marks the image as built by VeOmni |
@@ -51,7 +51,8 @@ For the complete list of published image tags, see [Ascend Docker Supported Tags
 Notes:
 
 - **A2 (910B)** ships two Dockerfiles (x86 and arm64); CI merges them into a single multi-arch image sharing one tag.
-- **A3** is arm64 only.
+- **A3** and **A5** are arm64 only.
+- CANN 9.2.1 A2/A3/A5 published artifacts are listed in [Supported Tags](supported_tags.md#cann-921). A5 build details and validation limits are in the [A5 guide](build_a5_docker.md).
 - The historical `8.3.rc2` Dockerfiles (`Dockerfile.ascend_8.3.rc2_a2.x86/.arm/a3`) remain in the repo but are no longer published.
 
 ---
@@ -96,6 +97,7 @@ For complete, advanced mount and training configuration (checkpoint / dataset mo
 
 - [build_a2_docker.md](build_a2_docker.md) — A2 (910B) build and usage
 - [build_a3_docker.md](build_a3_docker.md) — A3 build and usage
+- [build_a5_docker.md](build_a5_docker.md) — A5 CANN 9.2.1 build and validation scope
 
 ---
 
@@ -105,6 +107,7 @@ Starting from a CANN base image, build locally with the in-repo Dockerfiles. For
 
 - [build_a2_docker.md](build_a2_docker.md) (x86 uses uv, arm uses pip — two environments)
 - [build_a3_docker.md](build_a3_docker.md)
+- [build_a5_docker.md](build_a5_docker.md)
 
 ---
 

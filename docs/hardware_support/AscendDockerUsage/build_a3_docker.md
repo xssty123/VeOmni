@@ -1,5 +1,10 @@
 # Ascend A3 Docker Image Build and Usage Guide
 
+For the CANN 9.2.1 / torch-npu 2.10.0.post7 recipes imported from PR #1427,
+see the [A3 Dockerfile](../../../docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a3)
+and [published artifact list](supported_tags.md#cann-921).
+The instructions below describe the older image versions named in their commands.
+
 ## Overview
 This guide provides step-by-step instructions for building and using the Ascend A3 Docker image for VeOmni framework. The image is based on Huawei's Ascend CANN platform and includes all necessary dependencies for running multi-modal models on Ascend A3 accelerators.
 
