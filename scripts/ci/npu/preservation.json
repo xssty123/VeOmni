@@ -1,0 +1,29 @@
+{
+  "retained_branch": "codex/ascend-cann921",
+  "baseline": "298394aee6806472065142d86539308ed36b1101",
+  "unchanged": [
+    "tests/",
+    "veomni/",
+    "scripts/ci/accelerator/",
+    ".github/workflows/npu_unit_tests.yml",
+    ".github/workflows/npu_e2e_test.yml",
+    "scripts/ci/npu/run_candidate.sh",
+    "scripts/ci/npu/setup_candidate.sh"
+  ],
+  "historical_sources": {
+    "ci/npu-test-coverage": "8c5aaf3e6054652a0f5afd92700d9652e7c4f701",
+    "ci/npu-image-main-parity": "d1caa87b9d3c913943f5072eb29e229a6ecd9cae",
+    "ci/npu-image-st-main": "97bdea5964f92d6564ec7ec70f2cc54ba5f84901",
+    "ci/npu-ut-st-coverage": "c5bf89b068d0fdc4aae243edc59337af2c0df0d4"
+  },
+  "legacy_image_workflows": {
+    "scripts/ci/npu/legacy/npu_image_unit_tests.yml": {
+      "source": "ci/npu-test-coverage:.github/workflows/npu_image_unit_tests.yml",
+      "blob": "6593a401ea7a314bf0e3f1a8ad12bcb2e2752673"
+    },
+    "scripts/ci/npu/legacy/npu_image_e2e_tests.yml": {
+      "source": "ci/npu-test-coverage:.github/workflows/npu_image_e2e_tests.yml",
+      "blob": "64a52d2a5a26ad9162cb2ab16be76a1be8ef0b70"
+    }
+  }
+}
