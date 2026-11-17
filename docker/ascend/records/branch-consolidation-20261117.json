@@ -1,0 +1,25 @@
+{
+  "upstream_base": "6761cdfe7a23e49bc40ead870c6f82cb36e57237",
+  "recipe_source_commit": "c58f0f4b23f18452035b93a10620d0d206706be3",
+  "recipe_worktree": "/private/tmp/veomni-cann921-a2-a3-a5",
+  "preserved_file_sha256": {
+    "docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_910b.arm": "16bf3fa4cef3cdedbc7fd16459f54b574605019995f5b1b59eaf827f014a90d0",
+    "docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_910b.x86": "d970448c49e09da51f62059515be393cd04797fb492de9f5e622778e203fb644",
+    "docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a3": "c5cf1f5aa773114d64b492970e6ff856054e753ec59a785a86696ccf7b42f115",
+    "docker/ascend/Dockerfile.ascend_9.2.1_torch_npu2.10.0.post7_a5": "6b8f52fd2ac5417b7eba9c0adcad2765fc9144564669d211f96d42cfb59ebfdb",
+    "docs/hardware_support/AscendDockerUsage/build_a2_docker.md": "ac66ec85b257c71e87dbd04125f5a1de47f9c4144db5c8e66817566a580c3f9c",
+    "docs/hardware_support/AscendDockerUsage/build_a3_docker.md": "b6b5a782e85b19783b242974ec70077b54ae22c689182216c6d6ffd0d8f1ff2d",
+    "docs/hardware_support/AscendDockerUsage/build_a5_docker.md": "ebed315a7787ee3ad8fdc0d79900f90906917a543dccaba36c5756c2cb5878df"
+  },
+  "scope": "Branch consolidation only. Preserve recipe and dependency bytes; no image construction or publication.",
+  "history_sources": {
+    "image-tooling": "c2b79786bf4b0115e36e876afab65abd497747e0",
+    "codex/ascend-cann921-a2-a3-a5": "c58f0f4b23f18452035b93a10620d0d206706be3",
+    "codex/a5-cann921-main": "ac1d8171f58327f872e6a40058972fdbf2ed0735",
+    "codex/a3-cann920-compare": "4e1ea454da0fc69ef1535189ee97b3626cb5f1a5",
+    "codex/a5-cann921-pr1369": "a5cfbf29e91687a3910c84cd0a2c900cb25f4cb3",
+    "codex/ascend-a5-daily-20261111": "ed59c246ecbc12e952c24e3076789e270c3849a2",
+    "test/ascend-ghcr-candidate": "cfaddcd3705cc194ff092350c9177ae9dffe5054",
+    "refs/remotes/myfork/main": "5304e48b7bfad978d1f48198ca0fc469c37ba47c"
+  }
+}

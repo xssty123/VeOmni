@@ -1,0 +1,100 @@
+name: Copy recorded A5 image to Quay
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: copy-a5-local-to-quay
+  cancel-in-progress: false
+
+jobs:
+  copy:
+    if: github.repository == 'xssty123/VeOmni' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    environment: quay-production
+    env:
+      SOURCE: ghcr.io/xssty123/veomni-ascend-candidate@sha256:369b251a90d189051d0f95038345440869f105d6753395958223a11ed89aee95
+      DESTINATION: quay.io/ascend/veomni:v0.1.12-cann9.2.1-torch_npu2.10.0.post7-a5-ubuntu22.04-py3.12-veomni
+      EXPECTED_DIGEST: sha256:369b251a90d189051d0f95038345440869f105d6753395958223a11ed89aee95
+      EXPECTED_CONFIG: sha256:112a21cff75515133b0229ebfc21b411f017e06a0342cd92294e04352943a203
+      REGISTRY_AUTH_FILE: /tmp/a5-quay-auth.json
+    steps:
+      - name: Install registry copy tool
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y skopeo
+
+      - name: Verify exact source image
+        run: |
+          set -euo pipefail
+          skopeo inspect --raw "docker://$SOURCE" > source-manifest.json
+          skopeo inspect --config "docker://$SOURCE" > source-config.json
+          python3 - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          raw = Path('source-manifest.json').read_bytes()
+          assert 'sha256:' + hashlib.sha256(raw).hexdigest() == os.environ['EXPECTED_DIGEST']
+          manifest = json.loads(raw)
+          assert manifest['config']['digest'] == os.environ['EXPECTED_CONFIG']
+          assert len(manifest['layers']) == 30
+          config = json.loads(Path('source-config.json').read_text())
+          assert (config['os'], config['architecture']) == ('linux', 'arm64')
+          assert config['config']['Labels']['org.opencontainers.image.revision'] == '273d31cbf9eebd05913c38ed15388447a0f094f2'
+          print('Verified recorded A5 manifest, image ID, source revision and linux/arm64 platform.')
+          PY
+
+      - name: Log in with existing Quay Actions secrets
+        env:
+          QUAY_USERNAME: ${{ secrets.QUAY_USERNAME }}
+          QUAY_PASSWORD: ${{ secrets.QUAY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$QUAY_PASSWORD" | skopeo login --username "$QUAY_USERNAME" --password-stdin quay.io
+
+      - name: Require a new or already matching destination
+        id: destination
+        run: |
+          set -euo pipefail
+          if skopeo inspect --raw "docker://$DESTINATION" > existing-manifest.json 2> inspect-error.txt; then
+            digest="sha256:$(sha256sum existing-manifest.json | cut -d' ' -f1)"
+            [[ "$digest" == "$EXPECTED_DIGEST" ]] || { echo 'Refusing to replace a different existing image'; exit 1; }
+            echo 'copy_needed=false' >> "$GITHUB_OUTPUT"
+          elif grep -Eqi 'manifest unknown|name unknown' inspect-error.txt; then
+            echo 'copy_needed=true' >> "$GITHUB_OUTPUT"
+          else
+            cat inspect-error.txt >&2
+            exit 1
+          fi
+
+      - name: Copy exact recorded image without rebuilding
+        id: copy
+        if: steps.destination.outputs.copy_needed == 'true'
+        run: skopeo copy --all --preserve-digests --retry-times 3 "docker://$SOURCE" "docker://$DESTINATION"
+
+      - name: Verify destination even after a copy failure
+        if: ${{ always() && steps.destination.outcome == 'success' }}
+        run: |
+          set -euo pipefail
+          skopeo inspect --raw "docker://$DESTINATION" > destination-manifest.json
+          cmp source-manifest.json destination-manifest.json
+          skopeo inspect --config "docker://$DESTINATION" > destination-config.json
+          cmp source-config.json destination-config.json
+          {
+            echo '## A5 image copied and verified'
+            echo "- Source: $SOURCE"
+            echo "- Destination: $DESTINATION"
+            echo "- Digest: $EXPECTED_DIGEST"
+            echo "- Image ID: $EXPECTED_CONFIG"
+            echo '- Platform: linux/arm64'
+            echo '- Rebuilt: no'
+            echo '- Original build: 2026-11-05; packaging/import checks passed, dependency conflicts recorded.'
+            echo '- NPU UT/ST: not verified by this copy workflow.'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Remove temporary registry credentials
+        if: always()
+        run: rm -f "$REGISTRY_AUTH_FILE"
