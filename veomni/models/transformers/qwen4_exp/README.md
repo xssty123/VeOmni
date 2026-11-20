@@ -90,7 +90,7 @@ Known limitations:
 
 ## Compact QSA indexing on Ascend
 
-The indexer uses INT8 for NPU visibility gathers (the resulting mask is still
+The eager indexer uses INT8 for NPU visibility gathers (the resulting mask is still
 boolean) and bounded INT32 position arithmetic. Top-k scores and floating
 attention arithmetic are unchanged. Positions including compression padding
 must fit INT32, matching the output-index contract.
@@ -100,8 +100,35 @@ packed boundaries, compression ratio, local shard length and SP rank/group size.
 Blocks are bucketed by owner in one pass, and counts stay on the host. One model
 forward prepares the device metadata before the decoder loop and reuses it across
 QSA layers and checkpoint recomputation. Only rank-local query segment maps are
-materialized. Device tensors are not cached across forwards; direct indexer
-calls prepare their own metadata through the same validated path.
+materialized. Direct indexer calls prepare their own segment metadata through the
+same validated path. The CANN backend separately caches up to eight Lightning
+Indexer plans keyed by device and kernel shape.
+
+## Qwen3.8-Flash-Next Ascend training
+
+Enable the two backends independently under `model.ops_implementation`. The
+example also selects the existing grouped GDN backend to consume head-first
+Q/K/V directly.
+
+```yaml
+model:
+  ops_implementation:
+    qsa_indexer_implementation: cann
+    causal_conv1d_implementation: fla_npu
+    chunk_gated_delta_rule_implementation: fla_npu
+```
+
+- Lightning Indexer requires `lightning_indexer` and `lightning_indexer_metadata`
+  from `cann_ops_transformer.ops`. It ranks complete compressed blocks. VeOmni
+  adds the causal tail and resets block numbering at packed sample boundaries.
+  Use Ulysses and context parallel sizes of 1, FP16 or BF16, one index KV
+  head, index head dimension 128 and compression ratio 1, 4 or 128.
+  `qsa_attention_implementation` independently selects the attention kernel.
+- Head-first convolution requires `causal_conv1d_fn` and `causal_conv1d_bwd`
+  from `fla_npu.ops.ascendc`. It accepts fixed or packed training sequences
+  with equal GDN key/value head dimensions and no recurrent cache. The A3/A5
+  CANN 9.2.1 Dockerfiles pin FLA-NPU at `a7c608f2`, which exports both APIs.
+  These backends use the repository's standard Transformers 5.16.1 pin.
 
 ## Two-device pipeline regression
 

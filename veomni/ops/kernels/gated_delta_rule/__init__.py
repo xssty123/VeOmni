@@ -36,6 +36,7 @@ from ...platform import (
     NvidiaGpuPlatform,
 )
 from ...registry import register_op
+from .causal_conv1d.head_first import fla_npu as conv_head_first_npu
 from .causal_conv1d.standard import eager as conv_eager
 from .causal_conv1d.standard import fla as conv_fla
 from .causal_conv1d.standard import triton as conv_triton
@@ -106,6 +107,17 @@ register_op(
     description="Fused RMSNorm using torch_npu; SiLU uses npu_swiglu and sigmoid uses the eager gate",
     wrapper=rms_torch_npu.wrapper,
     requirement=NpuKernelRequirement(),
+)
+
+register_op(
+    "causal_conv1d",
+    "head_first",
+    "fla_npu",
+    conv_head_first_npu.forward,
+    conv_head_first_npu.backward,
+    description="AscendC depthwise convolution with native head-first output for grouped GDN",
+    requirement=NpuKernelRequirement(),
+    requires=("fla_npu",),
 )
 
 register_op(

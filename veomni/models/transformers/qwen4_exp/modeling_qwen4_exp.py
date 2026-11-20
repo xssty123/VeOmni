@@ -650,10 +650,11 @@ class Qwen4ExpTextGatedDeltaNet(nn.Module):
             "standard",
             config.ops_config.rms_norm_gated_implementation,
         )
+        conv_impl = config.ops_config.causal_conv1d_implementation
+        if conv_impl == "fla_npu" and self.head_k_dim != self.head_v_dim:
+            raise ValueError("Head-first AscendC convolution requires equal GDN key and value head dimensions")
         self.veomni_causal_conv1d = VeomniOp(
-            "causal_conv1d",
-            "standard",
-            config.ops_config.causal_conv1d_implementation,
+            "causal_conv1d", "head_first" if conv_impl == "fla_npu" else "standard", conv_impl
         )
         self.veomni_chunk_gated_delta_rule = VeomniOp(
             "chunk_gated_delta_rule",
@@ -775,58 +776,54 @@ class Qwen4ExpTextGatedDeltaNet(nn.Module):
                 ),
                 dim=0,
             )
-            mixed_qkv = self.veomni_causal_conv1d(
-                mixed_qkv,
-                conv_weight,
-                self.conv1d.bias,
-                cu_seq_lens_q,
-                activation=self.activation,
-                seq_idx=None,
-                backend="triton",
-            )
         else:
             local_num_k_heads = self.num_k_heads
             local_num_v_heads = self.num_v_heads
             local_key_dim = self.key_dim
             local_value_dim = self.value_dim
-            if packed_seq_lens is not None:
-                if cache_params is not None:
-                    raise ValueError("Qwen4-Exp packed GDN training does not support recurrent cache state.")
-                conv_weight = self.conv1d.weight.squeeze(1)
-                if self.veomni_causal_conv1d.impl == "eager":
-                    # Eager has no varlen path, so run each packed segment on its own.
-                    mixed_qkv = torch.cat(
-                        [
-                            self.veomni_causal_conv1d(
-                                segment,
-                                conv_weight,
-                                self.conv1d.bias,
-                                None,
-                                activation=self.activation,
-                                seq_idx=None,
-                                backend="triton",
-                            )
-                            for segment in mixed_qkv.split(packed_seq_lens, dim=1)
-                        ],
-                        dim=1,
-                    )
-                else:
-                    mixed_qkv = self.veomni_causal_conv1d(
-                        mixed_qkv,
-                        conv_weight,
-                        self.conv1d.bias,
-                        cu_seq_lens_q,
-                        activation=self.activation,
-                        seq_idx=None,
-                        backend="triton",
-                    )
+            conv_weight = self.conv1d.weight.squeeze(1)
+
+        if packed_seq_lens is not None and cache_params is not None:
+            raise ValueError("Qwen4-Exp packed GDN training does not support recurrent cache state.")
+        if self.veomni_causal_conv1d.impl == "fla_npu":
+            if cache_params is not None:
+                raise NotImplementedError("Head-first AscendC convolution supports training prefill without cache")
+            convolved = self.veomni_causal_conv1d(
+                mixed_qkv,
+                conv_weight,
+                self.conv1d.bias,
+                heads=2 * local_num_k_heads + local_num_v_heads,
+                activation=self.activation,
+                packed_lengths=packed_seq_lens,
+            )
+            # The GDN API takes BTHD views; its AscendC adapter transposes them back to BHTD.
+            query, key, value = (
+                part.transpose(1, 2)
+                for part in convolved.split((local_num_k_heads, local_num_k_heads, local_num_v_heads), dim=1)
+            )
+        else:
+            if packed_seq_lens is not None and self.veomni_causal_conv1d.impl == "eager":
+                # Eager has no varlen path, so run each packed segment on its own.
+                mixed_qkv = torch.cat(
+                    [
+                        self.veomni_causal_conv1d(
+                            segment,
+                            conv_weight,
+                            self.conv1d.bias,
+                            None,
+                            activation=self.activation,
+                            seq_idx=None,
+                            backend="triton",
+                        )
+                        for segment in mixed_qkv.split(packed_seq_lens, dim=1)
+                    ],
+                    dim=1,
+                )
             elif use_precomputed_states and seq_len == 1 and not cache_params.layers[self.layer_idx].record_past:
-                mixed_qkv = mixed_qkv.transpose(1, 2)
-                conv_state = cache_params.layers[self.layer_idx].conv_states[0]
                 mixed_qkv = causal_conv1d_update(
-                    mixed_qkv,
-                    conv_state,
-                    self.conv1d.weight.squeeze(1),
+                    mixed_qkv.transpose(1, 2),
+                    cache_params.layers[self.layer_idx].conv_states[0],
+                    conv_weight,
                     self.conv1d.bias,
                     self.activation,
                 ).transpose(1, 2)
@@ -837,9 +834,9 @@ class Qwen4ExpTextGatedDeltaNet(nn.Module):
                     ).transpose(1, 2)
                 mixed_qkv = self.veomni_causal_conv1d(
                     mixed_qkv,
-                    self.conv1d.weight.squeeze(1),
+                    conv_weight,
                     self.conv1d.bias,
-                    None,
+                    cu_seq_lens_q,
                     activation=self.activation,
                     seq_idx=None,
                     backend="triton",
@@ -847,10 +844,10 @@ class Qwen4ExpTextGatedDeltaNet(nn.Module):
                 if cache_params is not None:
                     mixed_qkv = mixed_qkv[:, -seq_len:]
 
-        query, key, value = torch.split(mixed_qkv, [local_key_dim, local_key_dim, local_value_dim], dim=-1)
-        query = query.reshape(batch_size, -1, local_num_k_heads, self.head_k_dim).contiguous()
-        key = key.reshape(batch_size, -1, local_num_k_heads, self.head_k_dim).contiguous()
-        value = value.reshape(batch_size, -1, local_num_v_heads, self.head_v_dim).contiguous()
+            query, key, value = torch.split(mixed_qkv, [local_key_dim, local_key_dim, local_value_dim], dim=-1)
+            query = query.reshape(batch_size, -1, local_num_k_heads, self.head_k_dim).contiguous()
+            key = key.reshape(batch_size, -1, local_num_k_heads, self.head_k_dim).contiguous()
+            value = value.reshape(batch_size, -1, local_num_v_heads, self.head_v_dim).contiguous()
         beta = b.sigmoid()
 
         if sp_enabled:
@@ -979,6 +976,8 @@ class Qwen4ExpTextQSAIndexer(nn.Module):
         self.q_layernorm = Qwen4ExpTextRMSNorm(self.index_head_dim, eps=config.rms_norm_eps, config=config)
         self.k_layernorm = Qwen4ExpTextRMSNorm(self.index_head_dim, eps=config.rms_norm_eps, config=config)
         self.veomni_rope = VeomniOp("rope", "partial", config.ops_config.rotary_pos_emb_implementation)
+        impl = config.ops_config.qsa_indexer_implementation
+        self.veomni_qsa_indexer = None if impl == "eager" else VeomniOp("qsa_indexer", "complete_blocks", impl)
 
     def forward(
         self,
@@ -1001,6 +1000,8 @@ class Qwen4ExpTextQSAIndexer(nn.Module):
         _, group, rank, world_size = _qwen4_exp_sequence_parallel_state(parallel_state)
         batch_size, local_seq_len, _ = hidden_states.shape
         global_seq_len = local_seq_len * world_size
+        if self.veomni_qsa_indexer is not None and world_size != 1:
+            raise NotImplementedError("QSA Lightning Indexer requires Ulysses and context parallel sizes of one")
         if global_seq_len + self.compress_ratio > torch.iinfo(torch.int32).max:
             raise ValueError("Qwen4-Exp compact QSA token positions must fit int32, including compression padding.")
         if self.index_kv_heads != 1:
@@ -1091,7 +1092,15 @@ class Qwen4ExpTextQSAIndexer(nn.Module):
         output_width = self.token_budget + self.compress_ratio - 1
         query_positions = local_start + torch.arange(local_seq_len, device=hidden_states.device)
 
-        if block_starts.numel():
+        if self.veomni_qsa_indexer is not None:
+            selected_local = self.veomni_qsa_indexer(
+                q,
+                pooled_keys[0],
+                segments=qsa_metadata.segments,
+                compress_ratio=self.compress_ratio,
+                block_topk=self.block_topk,
+            )
+        elif block_starts.numel():
             top_count = min(self.block_topk, block_starts.numel())
             block_offsets = torch.arange(self.compress_ratio, dtype=torch.int32, device=hidden_states.device)
             elements_per_query = max(1, batch_size * block_starts.numel() * self.index_n_heads)

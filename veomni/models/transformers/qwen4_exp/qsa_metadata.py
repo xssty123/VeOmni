@@ -32,6 +32,7 @@ class PreparedQSAMetadata:
 
     layout: tuple[int, int, int, int, int]
     counts: tuple[int, ...]
+    segments: tuple[tuple[int, int, int], ...]
     local_batch_ids: torch.Tensor
     local_block_starts: torch.Tensor
     block_segment_ids: torch.Tensor
@@ -117,6 +118,7 @@ def prepare_qsa_metadata(
     return PreparedQSAMetadata(
         (batch_size, local_seq_len, compress_ratio, rank, world_size),
         host.counts,
+        segments,
         local_batch_ids,
         local_block_starts,
         block_segment_ids,

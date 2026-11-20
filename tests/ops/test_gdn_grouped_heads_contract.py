@@ -50,6 +50,8 @@ class _PassthroughConv1d:
         self.impl = impl
 
     def __call__(self, x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+        if "heads" in kwargs:
+            return x.unflatten(-1, (kwargs["heads"], -1)).transpose(1, 2).contiguous()
         return x
 
 
@@ -79,6 +81,7 @@ class _RecordingGdnOp:
                 "q_shape": tuple(query.shape),
                 "k_shape": tuple(key.shape),
                 "v_shape": tuple(value.shape),
+                "q_head_first_contiguous": query.transpose(1, 2).is_contiguous(),
                 "q_contiguous": query.is_contiguous(),
                 "k_contiguous": key.is_contiguous(),
                 "v_contiguous": value.is_contiguous(),
@@ -258,9 +261,12 @@ def test_gdn_grouped_heads_dispatch_contract(
         assert call["q_shape"] == (1, expected_seq_len, expected_qk_heads, 8)
         assert call["k_shape"] == (1, expected_seq_len, expected_qk_heads, 8)
         assert call["v_shape"] == (1, expected_seq_len, local_v_heads, 8)
-        assert call["q_contiguous"] is True
-        assert call["k_contiguous"] is True
-        assert call["v_contiguous"] is True
+        head_first = model_name == "qwen4_exp" and impl == "fla_npu"
+        assert call["q_contiguous"] is not head_first
+        assert call["k_contiguous"] is not head_first
+        assert call["v_contiguous"] is not head_first
+        if head_first:
+            assert call["q_head_first_contiguous"]
         assert call["g_shape"] == (1, expected_seq_len, local_v_heads)
         assert call["beta_shape"] == (1, expected_seq_len, local_v_heads)
 

@@ -8,7 +8,7 @@ from types import SimpleNamespace
 import pytest
 import torch
 
-from scripts.ci.accelerator.launch_plan import from_parameter
+from scripts.ci.accelerator.launch_plan import LaunchSpec, from_parameter
 from veomni.utils.device import IS_NPU_AVAILABLE
 
 
@@ -28,6 +28,7 @@ def test_compact_qsa_npu_finite_mask_matches_gpu_packed_selection(monkeypatch):
         index_head_dim=2,
         compress_ratio=4,
         block_topk=2,
+        veomni_qsa_indexer=None,
         token_budget=8,
         index_qk_proj=torch.nn.Linear(3, 6, bias=False),
         q_layernorm=torch.nn.Identity(),
@@ -138,6 +139,7 @@ def _native_indexer_worker(rank, world_size, endpoint):
             index_head_dim=4,
             compress_ratio=4,
             block_topk=2,
+            veomni_qsa_indexer=None,
             token_budget=8,
             index_qk_proj=torch.nn.Linear(6, 12, bias=False).to(device=device, dtype=torch.bfloat16),
             q_layernorm=torch.nn.Identity(),
@@ -208,3 +210,43 @@ def test_native_int8_indexer_matches_bool_packed_reference(world_size):
     if get_torch_device().device_count() < world_size:
         pytest.skip(f"Requires {world_size} Ascend devices")
     spawn_with_rendezvous(_native_indexer_worker, args=(world_size,), nprocs=world_size)
+
+
+@pytest.mark.launch_plan(provider=LaunchSpec(device="cpu"))
+def test_qwen_lightning_indexer_keeps_causal_tail_and_packed_boundaries(monkeypatch):
+    from transformers import AutoConfig
+
+    from tests.tools.training_utils import make_eager_ops_config
+    from veomni.models.configuration_base import as_veomni_config
+    from veomni.ops.kernels.qsa_attention import lightning_indexer
+
+    modeling = _load_qwen4_exp_modeling()
+    config = AutoConfig.from_pretrained("tests/toy_config/qwen4_exp_toy").text_config
+    config.indexer_head_dim = 128
+    config.indexer_budget = 32
+    config.indexer_compress_ratio = 4
+    original_op = modeling.VeomniOp
+
+    def bind(op, variant, impl):
+        if op == "qsa_indexer":
+            assert (variant, impl) == ("complete_blocks", "cann")
+            return lightning_indexer.wrapper
+        return original_op(op, variant, impl)
+
+    monkeypatch.setattr(modeling, "VeomniOp", bind)
+    as_veomni_config(config, validate=False)._set_ops_implementation(
+        make_eager_ops_config(qsa_indexer_implementation="cann")
+    )
+    indexer = modeling.Qwen4ExpTextQSAIndexer(config, 0).to(torch.bfloat16)
+    hidden = torch.randn(1, 23, config.hidden_size, dtype=torch.bfloat16)
+    positions = (hidden.new_ones(1, 23, 8), hidden.new_zeros(1, 23, 8))
+    bounds = torch.tensor([0, 2, 11, 23], dtype=torch.int32)
+    actual = indexer(hidden, positions, None, None, cu_seq_lens_q=bounds)
+    indexer.veomni_qsa_indexer = None
+    eager = indexer(hidden, positions, None, None, cu_seq_lens_q=bounds)
+    torch.testing.assert_close(actual.sort(-1).values, eager.sort(-1).values)
+    assert actual.shape == (1, 23, 35)
+    for start, end in zip(bounds.tolist(), bounds.tolist()[1:]):
+        for row in range(start, end):
+            ids = actual[0, row]
+            assert ids[ids >= 0].sort().values.tolist() == list(range(start, row + 1))

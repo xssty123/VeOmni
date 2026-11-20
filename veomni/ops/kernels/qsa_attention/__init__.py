@@ -29,6 +29,7 @@ rows see one local attention call.
 
 from ...platform import NVIDIA_GPU, GpuKernelRequirement, NpuKernelRequirement
 from ...registry import register_op
+from . import lightning_indexer
 from .standard import eager as qsa_eager
 from .standard import tilelang as qsa_tilelang
 from .standard import torch_npu as qsa_torch_npu
@@ -59,4 +60,15 @@ register_op(
     description="torch_npu bounded-mask QSA sparse attention",
     wrapper=qsa_torch_npu.wrapper,
     requirement=NpuKernelRequirement(),
+)
+
+
+register_op(
+    "qsa_indexer",
+    "complete_blocks",
+    "cann",
+    wrapper=lightning_indexer.wrapper,
+    description="Lightning Indexer V2 selection of complete Qwen compressed blocks",
+    requirement=NpuKernelRequirement(),
+    requires=("cann_ops_transformer",),
 )

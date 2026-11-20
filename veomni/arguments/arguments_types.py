@@ -1637,8 +1637,7 @@ class OpsImplementationConfig:
             "'eager' leaves causal_conv1d_fn unset; the varlen training path then raises "
             "because no torch fallback handles cu_seqlens. "
             "'triton' uses the vendored Triton-Ascend kernel (requires triton-ascend, NPU). "
-            "Only affects varlen (dyn_bsz) training; a non-eager value on hardware without a "
-            "matching backend raises when the model resolves its kernel."
+            "'fla_npu' uses AscendC head-first convolution for Qwen4-Exp training (requires fla_npu)."
         },
     )
     chunk_gated_delta_rule_implementation: str = field(
@@ -1655,6 +1654,10 @@ class OpsImplementationConfig:
             "delegates heavy GDN compute to the stable fla_npu.ops.ascendc entry). "
             "A non-eager value on hardware without a matching backend raises when the model resolves its kernel."
         },
+    )
+    qsa_indexer_implementation: Literal["eager", "cann"] = field(
+        default="eager",
+        metadata={"help": "Qwen4-Exp compact token selection: eager or Ascend CANN Lightning Indexer (SP=1)."},
     )
     qsa_attention_implementation: Literal["eager", "tilelang", "torch_npu"] = field(
         default="eager",

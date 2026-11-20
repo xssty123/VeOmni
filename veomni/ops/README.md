@@ -58,6 +58,8 @@ when the selected implementation runs.
 | `dsa_indexer`, `dsa_attention` | `deepseek_v4`, `glm` | `eager`, `tilelang`, `triton`, `cann`, `cudnn`, or `flashmla_cudnn` by variant |
 | `kv_round` | `standard`, `deepseek_v4` | `none` (leave stored tensors alone), `eager`, `triton` (NVIDIA SM89+/ROCm, FP8 E4M3); `standard` takes block width and quantized prefix as call arguments, `deepseek_v4` fixes the model's two geometries and takes `rope_features` |
 | `mhc` | `pre`, `post`, `head` | `eager`, `tilelang`, `cann` (`head` / `cann` is the eager math) |
+| `causal_conv1d` | `head_first` | `fla_npu` (AscendC, Qwen4-Exp) |
+| `qsa_indexer` | `complete_blocks` | `cann` (Lightning Indexer V2, Ascend NPU) |
 | `qsa_attention` | `standard` | `eager`, `tilelang` (NVIDIA CUDA), `torch_npu` (Ascend NPU) |
 
 The MLU `liger_kernel` rows reuse the CUDA adapters and use
