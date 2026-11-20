@@ -183,7 +183,7 @@ def test_deferred_rows_wait_and_accumulate():
     assert not leaf._pending_host_rows
 
 
-@pytest.mark.launch_plan(provider=LaunchSpec(nproc=1, device="npu"))
+@pytest.mark.launch_plan(provider=LaunchSpec(nproc=1))
 def test_native_host_row_transfers():
     from veomni.distributed.host_embedding import drain_row_gradients, lookup_host_rows
     from veomni.utils.device import IS_NPU_AVAILABLE
