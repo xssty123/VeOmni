@@ -32,6 +32,7 @@ top-k distillation autograd Functions live in ``token_logprobs/chunked.py``.
 
 from ...platform import GpuKernelRequirement, MluKernelRequirement, NpuKernelRequirement
 from ...registry import register_op
+from .cross_entropy_loss.standard import cce_npu
 from .cross_entropy_loss.standard import chunk_loss as ce_chunk
 from .cross_entropy_loss.standard import eager as ce_eager
 from .cross_entropy_loss.standard import liger_kernel as ce_liger
@@ -99,6 +100,16 @@ register_op(
     requirement=_MLU,
     requires=("liger_kernel",),
     default=True,
+)
+
+register_op(
+    "cross_entropy_loss",
+    "standard",
+    "cce_npu",
+    wrapper=cce_npu.wrapper,
+    description="Ascend streaming vocabulary-tiled BF16 linear cross entropy",
+    requirement=_NPU,
+    requires=("triton",),
 )
 
 register_op(

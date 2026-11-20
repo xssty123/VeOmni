@@ -143,6 +143,7 @@ _BUILTIN_ENTRIES = (
     ("cross_entropy_loss", "standard", "eager", "any", _ANY, ()),
     ("cross_entropy_loss", "standard", "liger_kernel", "cuda", _GPU, ("liger_kernel",)),
     ("cross_entropy_loss", "standard", "liger_kernel", "mlu", _MLU, ("liger_kernel",)),
+    ("cross_entropy_loss", "standard", "cce_npu", "npu", _NPU, ("triton",)),
     ("cross_entropy_loss", "standard", "chunk_loss", "any", _ANY, ()),
     ("cross_entropy_loss", "standard", "chunk_loss", "npu", _NPU, ()),
     ("token_logprobs", "standard", "eager", "any", _ANY, ()),

@@ -1416,11 +1416,12 @@ _NPU_ALLOWED: Dict[str, frozenset] = {
     "linear_implementation": frozenset(),
     "kv_round_implementation": frozenset({"none"}),
     "load_balancing_loss_implementation": frozenset(),
-    "cross_entropy_loss_implementation": frozenset({"chunk_loss"}),
+    "cross_entropy_loss_implementation": frozenset({"chunk_loss", "cce_npu"}),
     "moe_implementation": frozenset({"fused_npu"}),
 }
 
 _NPU_REQUIRED: Dict[str, frozenset] = {
+    "cross_entropy_loss_implementation": frozenset({"cce_npu"}),
     "rms_norm_implementation": frozenset({"torch_npu"}),
     "rotary_pos_emb_implementation": frozenset({"torch_npu"}),
     "rotary_pos_emb_vision_implementation": frozenset({"torch_npu"}),

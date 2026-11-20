@@ -43,7 +43,7 @@ from tests.ops.tol import (
 from tests.ops.utils import make_grad_leaf
 from veomni.ops import resolve_op
 from veomni.ops.kernels.loss.cross_entropy_loss.standard import chunk_loss as chunk_loss_impl
-from veomni.utils.device import IS_CUDA_AVAILABLE
+from veomni.utils.device import IS_CUDA_AVAILABLE, IS_NPU_AVAILABLE
 
 
 @pytest.mark.launch_plan(provider=LaunchSpec(device="cpu"))
@@ -835,3 +835,47 @@ def test_hidden_state_implementations_require_weight(impl: str, device: str):
             torch.zeros(4, dtype=torch.long, device=device),
             _empty_weight(device),
         )
+
+
+@pytest.mark.launch_plan(provider=LaunchSpec(device="cpu"))
+@pytest.mark.parametrize("all_masked", [False, True])
+def test_cce_npu_adapter_uses_shifted_valid_targets(monkeypatch, all_masked):
+    import sys
+    from types import SimpleNamespace
+
+    from veomni.ops.kernels.loss.cross_entropy_loss.standard import cce_npu
+
+    def sum_loss(x, w, y, tile, ignore):
+        assert tile == min(4096, len(w)) and (y != ignore).all()
+        return torch.nn.functional.cross_entropy(x.float() @ w.float().T, y, reduction="sum")
+
+    monkeypatch.setitem(
+        sys.modules,
+        cce_npu.__package__ + ".cce_triton",
+        SimpleNamespace(ChunkLossCceFused=SimpleNamespace(apply=sum_loss)),
+    )
+    x = torch.randn(7, 8, dtype=torch.bfloat16, requires_grad=True)
+    w = torch.randn(17, 8, dtype=torch.bfloat16, requires_grad=True)
+    labels = torch.tensor([-100, 4, 6, 9, 2, -100, 0])
+    if all_masked:
+        labels.fill_(-100)
+    loss = cce_npu.wrapper(x, labels, w, num_items_in_batch=13)
+    ref = torch.nn.functional.cross_entropy(x.float() @ w.float().T, labels, reduction="sum") / 13
+    torch.testing.assert_close(loss, ref)
+    for got, want in zip(torch.autograd.grad(loss, (x, w)), torch.autograd.grad(ref, (x, w)), strict=True):
+        torch.testing.assert_close(got, want)
+
+
+@pytest.mark.skipif(not IS_NPU_AVAILABLE, reason="requires Ascend")
+def test_native_cce_vocabulary_tail_and_scaled_gradients():
+    op = resolve_op("cross_entropy_loss", "standard", "cce_npu").wrapper
+    torch.manual_seed(4)
+    x = torch.randn(37, 128, device="npu", dtype=torch.bfloat16).mul_(0.1).requires_grad_()
+    w = torch.randn(16391, 128, device="npu", dtype=torch.bfloat16).mul_(0.1).requires_grad_()
+    labels = torch.arange(37, device=x.device) * 397
+    labels[0], labels[-1] = -100, w.size(0) - 1
+    ref = torch.nn.functional.cross_entropy((x @ w.T).float(), labels, reduction="sum") / 43
+    got = op(x, labels, w, num_items_in_batch=43)
+    torch.testing.assert_close(got, ref, atol=0.002, rtol=0.002)
+    for a, b in zip(torch.autograd.grad(got * 0.3, (x, w)), torch.autograd.grad(ref * 0.3, (x, w)), strict=True):
+        torch.testing.assert_close(a, b, atol=0.0001, rtol=0.03)
