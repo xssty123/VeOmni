@@ -49,9 +49,9 @@ when the selected implementation runs.
 | `rope` | `full`, `partial`, `interleave`, `mrope`, `deepseek_v4`, `wan` | `eager`, `liger_kernel`, `torch_npu`, and `triton` where supported; `full` also accepts rank-3 vision layout |
 | `gated_mlp` | `standard`, `geglu` | `eager`, `liger_kernel`; `qat` (FP8 QAT) and `torchao_nvfp4` (NVFP4 QAT) are `standard` only. `liger_kernel` computes SiLU on `standard` and GELU-tanh on `geglu` — the variant fixes the activation, so it is not a choice on that row. Rows take the MLP **module** (`op(self, x, activation=...)`) and pick weights or projections themselves |
 | `linear` | `standard`, `grouped` | `eager`, `qat` (FP8 QAT), `torchao_nvfp4` (NVFP4 QAT, `standard` only). Rows take the projection **module** (`op(self.q_a_proj, x)`), not a weight tensor, so adapters work |
-| `moe_experts` | `standard`, `gpt_oss` | `eager`, `fused_triton`, `fused_quack`, `qat` (FP8/FP4 QAT), `deepgemm_fp8` (standard, SM90/SM100), `fused_npu`, `fused_mlu` as supported by the variant |
+| `moe_experts` | `standard`, `gpt_oss` | `eager`, `fused_triton`, `fused_quack`, `qat` (FP8/FP4 QAT), `deepgemm_fp8` (standard, SM90/SM100), `fused_npu`, `chunk_npu` (standard, two EP chunks), `fused_mlu` as supported by the variant |
 | `moe_experts_lora` | `independent`, `shared` | `eager`, `fused_triton`, `fused_npu` |
-| `cross_entropy_loss` | `standard` | `eager`, `chunk_loss`, `liger_kernel` |
+| `cross_entropy_loss` | `standard` | `eager`, `chunk_loss`, `cce_npu` (BF16 tiled vocabulary projection), `liger_kernel` |
 | `token_logprobs` | `standard` | `eager`, `flash_attn` (GPU Triton cross-entropy), `torch_npu` (Ascend NPU cross-entropy) |
 | `load_balancing_loss` | `standard` | `eager`, `triton` |
 | `rms_norm_gated`, `causal_conv1d`, `chunk_gated_delta_rule` | `standard` | `eager`, `fla` (CUDA, MLU, NPU), `flash_qla`, `torch_npu`, `triton` (Triton-Ascend), `fla_npu` as supported by the family |

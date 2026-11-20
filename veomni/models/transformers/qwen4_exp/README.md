@@ -106,9 +106,7 @@ Indexer plans keyed by device and kernel shape.
 
 ## Qwen3.8-Flash-Next Ascend training
 
-Enable the two backends independently under `model.ops_implementation`. The
-example also selects the existing grouped GDN backend to consume head-first
-Q/K/V directly.
+The [Ascend SFT configuration](../../../../configs/text/qwen38_flash_next_ascend.yaml) combines all seven adaptations. It uses BF16, FSDP2, EP=8, PLE=8, and CP=Ulysses=1. Set the checkpoint and dataset paths for your environment. Launch it with `bash train.sh tasks/train_vlm.py configs/text/qwen38_flash_next_ascend.yaml`. Individual kernel selectors can also be used independently. For example:
 
 ```yaml
 model:
@@ -129,6 +127,28 @@ model:
   with equal GDN key/value head dimensions and no recurrent cache. The A3/A5
   CANN 9.2.1 Dockerfiles pin FLA-NPU at `a7c608f2`, which exports both APIs.
   These backends use the repository's standard Transformers 5.16.1 pin.
+
+- `rms_norm_implementation: torch_npu` supports grouped offset RMSNorm. The
+  affine weight stays per feature, including when the PLE hyper-connection
+  normalizes each hidden-size group separately.
+- `moe_implementation: chunk_npu` overlaps the two EP token chunks' dispatch
+  and return collectives with local grouped expert GEMMs.
+- `cross_entropy_loss_implementation: cce_npu` requires Triton-Ascend. It
+  projects supervised BF16 hidden rows in vocabulary tiles up to 4096 entries.
+- Non-reentrant checkpointing with `selective_recompute_layers > 0` and
+  `save_ops: [attn, gdn]` reuses forward kernel outputs. GDN must go through
+  the dispatcher in the FLA-NPU stable launcher; a ctypes-only build cannot
+  intercept the kernel. With `enable_async_activation: true`, the block input
+  and native GDN/fusion-attention results can be offloaded to host memory.
+- `model.model_config.text_config.ple_host_offload: true` keeps the persistent
+  2D PLE shards on CPU. Lookup deduplicates rows before routing and again on
+  each owner. A side stream prefetches one layer ahead. Backward copies only
+  row gradients into pinned memory, and SparseAdam updates the touched rows
+  after global gradient clipping. The tables and their two FP32 moment tensors
+  require roughly three times the local padded table size in host RAM, plus
+  transient row and activation buffers. Gloo must be available for the CPU
+  mesh. Use a world-covering FSDP2 PLE mesh and streamed pretrained weights.
+  DCP saves the full logical parameter and optimizer state across owners.
 
 ## Two-device pipeline regression
 

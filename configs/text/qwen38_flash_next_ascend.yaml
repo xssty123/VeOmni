@@ -1,0 +1,62 @@
+model:
+  model_path: Qwen/Qwen3.8-Flash-Next
+  model_config:
+    text_config:
+      ple_host_offload: true
+  ops_implementation:
+    attn_implementation: sdpa
+    qsa_attention_implementation: torch_npu
+    qsa_indexer_implementation: cann
+    causal_conv1d_implementation: fla_npu
+    chunk_gated_delta_rule_implementation: fla_npu
+    rms_norm_implementation: torch_npu
+    moe_implementation: chunk_npu
+    cross_entropy_loss_implementation: cce_npu
+  accelerator:
+    ulysses_size: 1
+    cp_size: 1
+    ep_size: 8
+    extra_parallel_names: [ple]
+    extra_parallel_sizes: [8]
+    extra_parallel_placement_innermost: [false]
+    fsdp_config:
+      fsdp_mode: fsdp2
+    gradient_checkpointing:
+      enable: true
+      enable_reentrant: false
+      recompute_layers: -1
+      selective_recompute_layers: 64  # Counts above the decoder depth select the entire stack.
+      save_ops: [attn, gdn]
+    offload_config:
+      enable_async_activation: true
+      activation_offload_modules: ['model.language_model.layers.{*}']
+    init_device: meta
+  optimizer:
+    lr: 1.0e-5
+    lr_decay_style: cosine
+  broadcast_model_weights_from_rank0: false
+  ep_sharded_stream_load: true
+  chat_template: chatml
+
+data:
+  train_path: tulu-3-sft-mixture/data
+  data_type: conversation
+  max_seq_len: 16384
+  train_size: 750000
+  text_keys: messages
+  dyn_bsz_buffer_size: 200
+
+train:
+  wandb:
+    enable: false
+    project: VeOmni
+    name: qwen38-flash-next-ascend
+  freeze_vit: true
+  num_train_epochs: 2
+  micro_batch_size: 1
+  global_batch_size: null
+  max_steps: 10
+  checkpoint:
+    output_dir: qwen38-flash-next-ascend
+    manager: dcp
+    save_hf_weights: false
