@@ -66,6 +66,7 @@ from transformers.utils.generic import (
 from transformers.utils.output_capturing import OutputRecorder, capture_outputs
 
 from veomni.distributed.context_parallel.dsa_cp import all_gather_compressed_rows, all_gather_kv
+from veomni.distributed.host_embedding import HostEmbedding, lookup_host_rows
 from veomni.distributed.moe.comm import all_to_all
 from veomni.distributed.parallel_state import _init_parallel_state, get_parallel_state, use_parallel_state
 from veomni.distributed.sequence_parallel import gather_outputs, slice_input_tensor, sp_pad_and_slice
@@ -75,6 +76,7 @@ from veomni.models.loss_utils import ForCausalLMLoss, load_balancing_loss
 
 # Additional imports for patches
 from veomni.models.modeling_base import VeOmniPreTrainedModel as PreTrainedModel
+from veomni.models.transformers.qwen4_exp.host_ple import prefetch_layers
 from veomni.models.transformers.qwen4_exp.packed_ple import (
     correct_packed_ple_convolution,
     local_packed_boundary_indices,
@@ -1606,9 +1608,15 @@ class Qwen4ExpTextNGramEmbedding(nn.Module):
         self.split_ngram_parts = config.split_ngram_parts
         self.rows_per_checkpoint_shard = padded_vocab_size // self.split_ngram_parts
         self.padded_rows_per_shard = math.ceil(self.rows_per_checkpoint_shard / vocab_divisor) * vocab_divisor
+        self.host_offload = getattr(config, "ple_host_offload", False)
+        if self.host_offload:
+            ps = get_parallel_state()
+            if ps.dp_mode != "fsdp2" or ps.extra_parallel_sizes.get("ple", 1) <= 1:
+                raise ValueError("Host PLE requires FSDP2 and ple_size > 1")
+        embedding_cls = HostEmbedding if self.host_offload else nn.Embedding
         self.ngram_embedding = nn.ModuleDict(
             {
-                f"shard_{shard_idx}": nn.Embedding(
+                f"shard_{shard_idx}": embedding_cls(
                     self.padded_rows_per_shard,
                     head_dim_per_ngram,
                     dtype=torch.float32,
@@ -1640,6 +1648,8 @@ class Qwen4ExpTextNGramEmbedding(nn.Module):
         row_ids: torch.Tensor,
         output_dtype: torch.dtype | None = None,
     ) -> torch.Tensor:
+        if self.host_offload:
+            return lookup_host_rows(self.ngram_embedding, shard_ids, row_ids, output_dtype, self.padded_rows_per_shard)
         first_embedding = self.ngram_embedding["shard_0"]
         first_weight = first_embedding.weight
         if hasattr(first_weight, "to_local"):
@@ -1852,11 +1862,15 @@ class Qwen4ExpTextNGramEmbedding(nn.Module):
         ngram_ids = torch.cat(blocks, dim=-1)[:, -input_ids.shape[1] :]
         original_shape = ngram_ids.shape
         flat_ids = ngram_ids.reshape(-1)
+        if self.host_offload:
+            flat_ids, inverse = flat_ids.unique(return_inverse=True)
         shard_ids = torch.div(flat_ids, self.rows_per_checkpoint_shard, rounding_mode="floor")
         row_ids = torch.remainder(flat_ids, self.rows_per_checkpoint_shard)
         # --- Patch.5: Load distributed PLE rows through the VeOmni lookup path. ---
         embeddings = self._distributed_lookup(shard_ids, row_ids, output_dtype=output_dtype)
         # --- Patch.5 ---
+        if self.host_offload:
+            embeddings = embeddings.index_select(0, inverse)
         return embeddings.view(*original_shape, -1).flatten(-2)
 
 
@@ -2001,20 +2015,23 @@ class Qwen4ExpTextPLELayer(nn.Module):
         packed_seq_lens: list[int] | tuple[int, ...] | None = None,
         packed_positions: torch.Tensor | None = None,
         packed_boundary_indices: torch.Tensor | None = None,
+        prefetched_embeddings: torch.Tensor | None = None,
     ) -> torch.Tensor:
         if packed_positions is not None and past_key_values is not None:
             raise NotImplementedError("Packed PLE boundaries cannot be combined with cached PLE state.")
         # --- Patch.1: Run the PLE layer with VeOmni sequence-parallel handling. ---
         # Keep FP32 PLE master weights while casting sparse lookup results to the
         # activation dtype before the result all-to-all and downstream projections.
-        embeddings = self.ple_embedding(
-            input_ids,
-            past_key_values,
-            output_dtype=hidden_states.dtype,
-            cu_seq_lens_q=cu_seq_lens_q,
-            packed_seq_lens=packed_seq_lens,
-            packed_positions=packed_positions,
-        )
+        embeddings = prefetched_embeddings
+        if embeddings is None:
+            embeddings = self.ple_embedding(
+                input_ids,
+                past_key_values,
+                output_dtype=hidden_states.dtype,
+                cu_seq_lens_q=cu_seq_lens_q,
+                packed_seq_lens=packed_seq_lens,
+                packed_positions=packed_positions,
+            )
         # --- Patch.1 ---
         key_normed = self.norm_key(self.key_proj(embeddings)).unflatten(-1, (self.hc_count, self.hidden_size))
         value = self.value_proj(embeddings)
@@ -2081,6 +2098,7 @@ class Qwen4ExpTextDecoderLayer(GradientCheckpointingLayer):
         ple_packed_positions: torch.Tensor | None = None,
         ple_packed_boundary_indices: torch.Tensor | None = None,
         qsa_metadata: PreparedQSAMetadata | None = None,
+        ple_embeddings: torch.Tensor | None = None,
         **kwargs: Unpack[TransformersKwargs],
     ) -> torch.FloatTensor:
         # --- Patch.1: Thread the packed boundaries into the PLE token mixers. ---
@@ -2100,6 +2118,7 @@ class Qwen4ExpTextDecoderLayer(GradientCheckpointingLayer):
                 packed_seq_lens=packed_seq_lens,
                 packed_positions=ple_packed_positions,
                 packed_boundary_indices=ple_packed_boundary_indices,
+                prefetched_embeddings=ple_embeddings,
             )
         # --- Patch.1 ---
 
@@ -2398,7 +2417,14 @@ class Qwen4ExpTextModel(Qwen4ExpPreTrainedModel):
             )
 
         # --- Patch.4: Run the patched decoder layers and restore the output layout. ---
-        for decoder_layer in self.layers[: self.config.num_hidden_layers]:
+        layers = self.layers[: self.config.num_hidden_layers]
+        if getattr(self.config, "ple_host_offload", False) and ple_input_ids is not None and past_key_values is None:
+            layer_inputs = prefetch_layers(
+                layers, ple_input_ids, inputs_embeds.dtype, cu_seq_lens_q, ple_packed_positions
+            )
+        else:
+            layer_inputs = ((layer, None) for layer in layers)
+        for decoder_layer, ple_embeddings in layer_inputs:
             hidden_states = decoder_layer(
                 hidden_states,
                 position_embeddings=position_embeddings,
@@ -2408,6 +2434,7 @@ class Qwen4ExpTextModel(Qwen4ExpPreTrainedModel):
                 conv_mask=conv_mask,
                 past_key_values=past_key_values,
                 ple_input_ids=ple_input_ids,
+                ple_embeddings=ple_embeddings,
                 packed_seq_lens=packed_seq_lens,
                 ple_packed_positions=ple_packed_positions,
                 ple_packed_boundary_indices=ple_packed_boundary_indices,

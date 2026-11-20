@@ -493,6 +493,10 @@ def build_optimizer(
     takes the elementwise path elsewhere.
     """
     if optimizer_type == "muon":
+        from ..distributed.host_embedding import HostEmbedding
+
+        if any(isinstance(m, HostEmbedding) for m in model.modules()):
+            raise ValueError("Host PLE requires AdamW for the model and SparseAdam for its host tables")
         if optimizer_config is not None:
             muon_kwargs = {**_collect_muon_kwargs(optimizer_config), **(muon_kwargs or {})}
         if param_groups is not None:
@@ -974,6 +978,20 @@ def build_extra_parallel_fsdp2_optimizer(
     optimizer_dict: Dict[str, Optimizer] = {}
     for para in parallel_state.extra_parallel_names:
         if extra_parallel_groups[para]:
+            if para == "ple":
+                from ..distributed.host_embedding import HostEmbedding
+                from .host_sparse_adam import HostSparseAdam
+
+                host_weights = {
+                    m.weight for m in model.modules() if isinstance(m, HostEmbedding) and m.weight.requires_grad
+                }
+                if host_weights:
+                    groups = extra_parallel_groups[para]
+                    if host_weights != {p for g in groups for p in g["params"]}:
+                        raise ValueError("Host PLE optimizer groups must contain exactly the trainable host tables")
+                    optimizer_dict[para] = HostSparseAdam(groups, lr, betas, eps)
+                    model._host_ple_optimizer = optimizer_dict[para]
+                    continue
             optimizer_dict[para] = _build(extra_parallel_groups[para])
     if non_extra_parallel_groups:
         optimizer_dict["non_extra_parallel"] = _build(non_extra_parallel_groups)

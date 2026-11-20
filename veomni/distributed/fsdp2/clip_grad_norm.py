@@ -220,6 +220,24 @@ def extra_parallel_fsdp2_clip_grad_norm(
             persistent_extra_parallel_total[para] = para_total
             logger.debug_rank0(f"{para} persistent 2D total grad norm: {para_total}")
 
+    host_optimizer = getattr(model, "_host_ple_optimizer", None)
+    if host_optimizer is not None:
+        # Sum unique CPU row contributions locally, then move just one scalar to
+        # the accelerator for the same 2-D reduction as device-resident PLE.
+        host_stat = torch.zeros((), dtype=torch.float32)
+        for values in host_optimizer.gradient_values():
+            if math.isinf(norm_type):
+                host_stat = torch.maximum(host_stat, values.abs().max())
+            else:
+                host_stat += torch.linalg.vector_norm(values, ord=norm_type).pow(norm_type)
+        stat = host_stat.to(non_extra_parallel_total)
+        dist.all_reduce(
+            stat,
+            op=dist.ReduceOp.MAX if math.isinf(norm_type) else dist.ReduceOp.SUM,
+            group=ps.extra_parallel_flat_group("ple"),
+        )
+        persistent_extra_parallel_total["ple"] = stat
+
     if math.isinf(norm_type):
         # ``torch.maximum`` is a 2-arg elementwise op, not variadic. Unpacking
         # ``*extra_parallel_total.values(), *extra_parallel_replicated_total.values()``
@@ -246,6 +264,11 @@ def extra_parallel_fsdp2_clip_grad_norm(
         )
 
     _raise_if_nonfinite(total_norm, norm_type, error_if_nonfinite)
+
+    if host_optimizer is not None:
+        coefficient = (max_norm / (total_norm + 1e-6)).clamp(max=1).cpu()
+        for values in host_optimizer.gradient_values():
+            values.mul_(coefficient)
 
     # Apply the same clip coefficient to all groups
     for para in ps.extra_parallel_names:

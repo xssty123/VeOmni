@@ -1,5 +1,6 @@
-from torch.distributed._tensor import Shard
+from torch.distributed._tensor import DeviceMesh, Shard
 
+from ....distributed.host_embedding import HostEmbedding
 from ....distributed.parallel_plan import ParallelPlan
 
 
@@ -9,6 +10,19 @@ class Qwen4ExpParallelPlan(ParallelPlan):
     def apply(self, model, extra_parallel_fsdp_device_mesh):
         meshes = dict.fromkeys(self.extra_parallel_plan)
         meshes.update(extra_parallel_fsdp_device_mesh)
+        if any(isinstance(module, HostEmbedding) for module in model.modules()):
+            mesh = meshes["ple"]
+            if mesh is None or mesh.ndim != 2:
+                raise ValueError("Host PLE requires a persistent (ple_fsdp, ple) mesh")
+            # DCP sees the same global shard coordinates. HCCL routing still uses
+            # the accelerator groups in ParallelState; weights and moments use Gloo.
+            if mesh.device_type != "cpu":
+                meshes["ple"] = DeviceMesh(
+                    "cpu",
+                    mesh.mesh,
+                    mesh_dim_names=mesh.mesh_dim_names,
+                    backend_override=(("gloo", None),) * mesh.ndim,
+                )
         return super().apply(model, meshes)
 
 

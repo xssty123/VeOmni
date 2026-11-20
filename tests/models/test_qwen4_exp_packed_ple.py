@@ -291,6 +291,7 @@ def test_production_ngram_history_matches_independent_samples():
     from types import MethodType, SimpleNamespace
 
     embedding = SimpleNamespace(
+        host_offload=False,
         eos_token_id=0,
         context_len=2,
         ngram_size=3,
@@ -332,6 +333,7 @@ def test_production_packed_ngram_uses_previous_rank_halo_under_sp():
 
     def make_embedding():
         embedding = SimpleNamespace(
+            host_offload=False,
             eos_token_id=0,
             context_len=context_len,
             ngram_size=3,
