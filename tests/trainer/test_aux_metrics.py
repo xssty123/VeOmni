@@ -28,6 +28,7 @@ import os
 import time
 from contextlib import nullcontext
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 
 os.environ.setdefault("TORCH_DEVICE_BACKEND_AUTOLOAD", "0")
@@ -403,3 +404,20 @@ def test_environ_meter_tolerates_a_step_without_aux_metrics(monkeypatch, aux_met
 
     assert callback.trainer.step_train_metrics["training/foundation_loss"] == pytest.approx(2.0)
     assert callback.trainer.step_train_metrics["training/grad_norm"] == pytest.approx(0.5)
+
+
+@pytest.mark.parametrize(
+    ("env", "expected"),
+    [
+        ({"mfu": 0.23456, "flops_promised(T)": 100.0}, ", MFU: 23.46%"),
+        ({"mfu": 0.0, "flops_promised(T)": float("inf")}, ", MFU: N/A"),
+        ({}, ""),
+    ],
+)
+def test_progress_bar_appends_step_mfu(env, expected):
+    callback = object.__new__(trace_callback_module.TqdmCallback)
+    callback.trainer = SimpleNamespace(step_train_metrics={"training/total_loss": 1.5}, step_env_metrics=env)
+    callback.data_loader_tqdm = Mock()
+    callback.on_step_end(TrainerState(global_step=1))
+    callback.data_loader_tqdm.set_postfix_str.assert_called_once_with(f"total_loss: 1.50{expected}", refresh=False)
+    callback.data_loader_tqdm.update.assert_called_once_with()

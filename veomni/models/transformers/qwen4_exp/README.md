@@ -150,6 +150,12 @@ model:
   mesh. Use a world-covering FSDP2 PLE mesh and streamed pretrained weights.
   DCP saves the full logical parameter and optimizer state across owners.
 
+The training progress bar displays each step's estimated MFU as a percentage.
+For an accelerator without a peak in VeOmni's device table (including Ascend
+950), set `VEOMNI_DEVICE_BF16_TFLOPS` to the dense BF16 peak in TFLOP/s of
+**one device visible to a training rank**. The meter scales it by the world
+size. An unknown peak displays as `MFU: N/A`.
+
 ## Two-device pipeline regression
 
 Run the daily toy regression with:

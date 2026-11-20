@@ -12,6 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+import math
 import time
 from typing import TYPE_CHECKING, Any, Dict, List, Union
 
@@ -294,5 +295,10 @@ class TqdmCallback(Callback):
 
     def on_step_end(self, state: TrainerState, **kwargs) -> None:
         postfix = ", ".join(f"{k.split('/', 1)[-1]}: {v:.2f}" for k, v in self.trainer.step_train_metrics.items())
+        metrics = self.trainer.step_env_metrics
+        if "mfu" in metrics:
+            peak = metrics["flops_promised(T)"]
+            mfu = f"{metrics['mfu']:.2%}" if 0 < peak < math.inf else "N/A"
+            postfix = f"{postfix}, MFU: {mfu}"
         self.data_loader_tqdm.set_postfix_str(postfix, refresh=False)
         self.data_loader_tqdm.update()

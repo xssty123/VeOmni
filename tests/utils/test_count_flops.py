@@ -68,6 +68,15 @@ def mock_device_flops():
         yield
 
 
+def test_device_peak_override(monkeypatch):
+    monkeypatch.setenv("VEOMNI_DEVICE_BF16_TFLOPS", "425.5")
+    assert get_device_flops() == 425.5
+    assert get_device_flops("P") == pytest.approx(0.4255)
+    monkeypatch.setenv("VEOMNI_DEVICE_BF16_TFLOPS", "nan")
+    with pytest.raises(ValueError, match="VEOMNI_DEVICE_BF16_TFLOPS"):
+        get_device_flops()
+
+
 def test_b200_device_flops():
     with patch("veomni.utils.count_flops.get_device_name", return_value="NVIDIA B200"):
         assert get_device_flops() == 2382.0

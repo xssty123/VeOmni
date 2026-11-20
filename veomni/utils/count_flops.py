@@ -13,11 +13,14 @@
 # limitations under the License.
 
 
+import math
+
 from transformers import PretrainedConfig
 
 from ..lora.config import LORA_MODULES_BY_MODEL_TYPE, VeOmniLoraConfig
 from . import logging
 from .device import get_device_name
+from .env import get_env
 
 
 logger = logging.get_logger(__name__)
@@ -43,6 +46,13 @@ def get_device_flops(unit="T"):
             number /= 1000
             ptr += 1
         return number
+
+    override = get_env("VEOMNI_DEVICE_BF16_TFLOPS")
+    if override is not None:
+        peak = float(override)
+        if not math.isfinite(peak) or peak <= 0:
+            raise ValueError("VEOMNI_DEVICE_BF16_TFLOPS must be a finite positive single-device BF16 peak")
+        return unit_convert(peak * 1e12, unit)
 
     device_name = get_device_name()
     flops = float("inf")  # INF flops for unkown gpu type
