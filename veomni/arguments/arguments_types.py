@@ -531,7 +531,7 @@ class GradientCheckpointingConfig:
             "help": (
                 "Operators SAC keeps (MUST_SAVE) instead of recomputing, on top of the "
                 "attention set it always keeps. Empty (default) or 'attn' = that "
-                "attention set. Any other entry is read as a literal operator string, "
+                "attention set. 'gdn' also saves the stable FLA-NPU GDN forward. Other entries are literal operators, "
                 "e.g. 'aten._scaled_dot_product_attention.default'. Only applies while "
                 "SAC is on."
             )

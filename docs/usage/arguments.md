@@ -610,7 +610,7 @@ These are detached data metrics; DPO objective and completion masking are separa
 | early_stop | `bool` | `True` | Stop non-reentrant checkpoint recomputation as soon as all needed tensors are computed. PyTorch ignores this option when `enable_reentrant=True`. |
 | recompute_layers | `int` | `-1` | How many blocks recompute, counted from the end of the stack: `-1` = all, `N` = the last `N`, `0` = none. See [Layer-scoped recomputation](#layer-scoped-recomputation). |
 | selective_recompute_layers | `int` | `0` | How many of those blocks run selective activation checkpointing (SAC) instead, counted from the front of the recomputed range. Needs `enable_reentrant=False`. |
-| save_ops | `List[str]` | `[]` | Operators SAC keeps instead of recomputing, on top of the attention set it always keeps. Empty means that attention set alone. |
+| save_ops | `List[str]` | `[]` | Operators SAC keeps instead of recomputing, on top of the attention set it always keeps. Empty means that attention set alone. Add `gdn` to retain the stable FLA-NPU GDN forward outputs, including cumulative gates and A. |
 
 #### Layer-scoped recomputation
 
@@ -642,7 +642,7 @@ recompute in full, with a warning naming the reason:
 
 - `enable_reentrant=True` — torch takes no `context_fn` under reentrant
   checkpointing.
-- Activation offload is on — the offload owns the checkpoint boundary.
+- Activation offload owns the checkpoint boundary. Async activation offload can run together with explicit `save_ops: [attn, gdn]`: the outer hook offloads the block input and SAC retains selected operator outputs on device.
 
 A third case is not about SAC but about reaching the blocks at all: a model that
 drives `torch.utils.checkpoint` itself (ltx2_3) leaves no entry point to

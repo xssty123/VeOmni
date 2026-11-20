@@ -1977,3 +1977,31 @@ def test_upstream_pybind_kernel_without_a_dispatcher_name_gets_no_sac_benefit():
     _, full_replayed = _replays_under(FULL_POLICY, _FlashAttn2Model(), _FA2_CALLS)
 
     assert sac_replayed == full_replayed == 3
+
+
+def test_sac_reuses_late_registered_kernel_forward():
+    name = "veomni_sac_test.late_gdn.default"
+    contexts = recompute_utils._build_context_fn([name])
+    count = []
+    with torch.library._scoped_library("veomni_sac_test", "FRAGMENT") as lib:
+        lib.define("late_gdn(Tensor x) -> Tensor")
+
+        def kernel(x):
+            count.append(1)
+            return x.sin()
+
+        lib.impl("late_gdn", kernel, "CPU")
+
+        def block(x):
+            with torch.no_grad():
+                y = torch.ops.veomni_sac_test.late_gdn.default(x)
+            return (x * y).sin()
+
+        x = torch.randn(8, requires_grad=True)
+        out = torch.utils.checkpoint.checkpoint(block, x, use_reentrant=False, context_fn=contexts)
+        out.sum().backward()
+        assert len(count) == 1
+        torch.testing.assert_close(x.grad, x.detach().sin() * (x.detach() * x.detach().sin()).cos())
+    assert recompute_utils.expand_save_ops(["attn", "gdn"]) == [
+        "fla_npu_stable.npu_chunk_gated_delta_rule_fwd.default"
+    ]

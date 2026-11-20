@@ -394,7 +394,9 @@ class VeOmniModelRuntime:
             save_ops=gc_cfg.save_ops,
             recompute_context=self._recompute_context(),
             offload_active=self.args.accelerator.offload_config.enable_activation
-            or self.args.accelerator.offload_config.enable_async_activation,
+            # The asynchronous hook encloses the checkpoint and offloads its input.
+            # An explicitly selected GDN SAC policy can cache kernel results inside it.
+            or (self.args.accelerator.offload_config.enable_async_activation and "gdn" not in gc_cfg.save_ops),
             compile_enabled=self.args.accelerator.torch_compile.enable,
         )
 

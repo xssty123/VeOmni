@@ -214,7 +214,10 @@ def _selective_namespaces(registered: Sequence[str]) -> list[str]:
 #: ``attn`` expands to the empty tuple on purpose: the default attention set *is*
 #: what an empty extras list already resolves to (``resolve_exact_ops``), so the
 #: name documents the default rather than widening it.
-SAVE_OPS: dict[str, tuple[str, ...]] = {"attn": ()}
+SAVE_OPS: dict[str, tuple[str, ...]] = {
+    "attn": (),
+    "gdn": ("fla_npu_stable.npu_chunk_gated_delta_rule_fwd.default",),
+}
 
 
 def expand_save_ops(save_ops: Sequence[str] | None) -> list[str]:
@@ -292,7 +295,9 @@ def resolve_exact_ops(extra_op_names: Sequence[str] | None = None) -> tuple[list
     return unique, failed
 
 
-def _make_selective_policy(exact_ops: Sequence[Any]) -> Callable[[Any, Any, tuple, dict], Any]:
+def _make_selective_policy(
+    exact_ops: Sequence[Any], late_ops: Sequence[str] = ()
+) -> Callable[[Any, Any, tuple, dict], Any]:
     """Policy fn for ``create_selective_checkpoint_contexts``.
 
     Returns MUST_SAVE for resolved attention ops (exact identity) *and* for any
@@ -307,13 +312,14 @@ def _make_selective_policy(exact_ops: Sequence[Any]) -> Callable[[Any, Any, tupl
     matched by identity or by name.
     """
     op_set = set(exact_ops)
+    late_names = {name.removeprefix("torch.ops.") for name in late_ops}
 
     def policy(ctx, op, *args, **kwargs):
         del ctx, args, kwargs  # unused
         qualname = _op_qualname(op)
         if _is_vetoed(qualname):
             return torch.utils.checkpoint.CheckpointPolicy.PREFER_RECOMPUTE
-        if op in op_set or _matches_tokens(qualname, DEFAULT_SELECTIVE_TOKENS):
+        if op in op_set or str(op) in late_names or _matches_tokens(qualname, DEFAULT_SELECTIVE_TOKENS):
             return torch.utils.checkpoint.CheckpointPolicy.MUST_SAVE
         return torch.utils.checkpoint.CheckpointPolicy.PREFER_RECOMPUTE
 
@@ -325,11 +331,11 @@ def _build_context_fn(extra_op_names: Sequence[str] | None) -> Callable[[], tupl
     exact_ops, failed = resolve_exact_ops(extra_op_names)
     if failed:
         logger.warning_once(
-            f"cannot resolve extra selective op(s) {failed!r}; they are covered by the name-substring policy only"
+            f"cannot resolve extra selective op(s) {failed!r}; they will also be matched by exact overload name at execution"
         )
     logger.info_rank0(f"SAC enabled with {len(exact_ops)} exact attention ops plus the name-substring fallback")
     return functools.partial(
-        torch.utils.checkpoint.create_selective_checkpoint_contexts, _make_selective_policy(exact_ops)
+        torch.utils.checkpoint.create_selective_checkpoint_contexts, _make_selective_policy(exact_ops, failed)
     )
 
 
