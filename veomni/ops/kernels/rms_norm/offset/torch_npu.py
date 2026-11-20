@@ -21,48 +21,55 @@ from dataclasses import dataclass
 from torch import Tensor
 
 from ....registry import SavedState
-from ..group import apply_group_size_fallback_weighted
+from ..group import group_last_dim
 from . import eager as _eager
 
 
 @dataclass(frozen=True)
 class _Meta:
-    """Whether the empty-tensor path ran, plus ``eps`` for the eager fallback."""
+    """Last-dimension grouping applied by the native forward."""
 
-    empty: bool
-    eps: float
+    group_size: int | None = None
 
 
-def forward(x: Tensor, weight: Tensor, *, eps: float) -> tuple[Tensor, SavedState]:
+def forward(x: Tensor, weight: Tensor, *, eps: float, group_size: int | None = None) -> tuple[Tensor, SavedState]:
     """NPU fused affine RMSNorm. The fused scale is ``1 + weight``.
 
     Empty ``x`` falls back to the eager pair. Backward also passes
     ``1 + weight`` into ``npu_rms_norm_backward``.
     """
-    scale = 1.0 + weight
     if x.numel() == 0:
-        output, saved = _eager.forward(x, weight, eps=eps)
-        return output, SavedState(saved.tensors, _Meta(True, eps))
+        return _eager.forward(x, weight, eps=eps, group_size=group_size)
 
     import torch_npu
 
-    output, rstd = torch_npu.npu_rms_norm(x, scale, eps)
-    return output, SavedState((x, weight, rstd), _Meta(False, eps))
+    if group_size is not None:
+        grouped = group_last_dim(x.float(), group_size)
+        unit = grouped.new_ones(group_size)
+        normalized, rstd = torch_npu.npu_rms_norm(grouped, unit, eps)
+        output = normalized.reshape_as(x) * (1.0 + weight.float())
+        return output.to(x.dtype), SavedState((x, weight, rstd, unit), _Meta(group_size))
+    output, rstd = torch_npu.npu_rms_norm(x, 1.0 + weight, eps)
+    return output, SavedState((x, weight, rstd), _Meta())
 
 
 def backward(grad_output: Tensor, saved: SavedState) -> tuple[Tensor, Tensor]:
     """Return ``(grad_x, grad_weight)``. Empty inputs reuse the eager backward."""
     meta = saved.metadata
-    assert isinstance(meta, _Meta)
+    if not isinstance(meta, _Meta):
+        return _eager.backward(grad_output, saved)
     x, weight, *optional_rstd = saved.tensors
-    if meta.empty:
-        return _eager.backward(grad_output, SavedState((x, weight), _eager._Meta(True, meta.eps)))
 
     import torch_npu
 
+    if meta.group_size is not None:
+        rstd, unit = optional_rstd
+        grouped = group_last_dim(x.float(), meta.group_size)
+        grad = grad_output.float()
+        scaled = (grad * (1.0 + weight.float())).reshape_as(grouped)
+        dx, _ = torch_npu.npu_rms_norm_backward(scaled.contiguous(), grouped, unit, rstd)
+        dw = (grad * (grouped * rstd).reshape_as(x)).sum_to_size(weight.shape)
+        return dx.reshape_as(x).to(x.dtype), dw.to(weight.dtype)
     (rstd,) = optional_rstd
     scale = 1.0 + weight
     return torch_npu.npu_rms_norm_backward(grad_output.contiguous(), x, scale, rstd)
-
-
-forward, backward = apply_group_size_fallback_weighted(forward, backward, _eager.forward, _eager.backward)

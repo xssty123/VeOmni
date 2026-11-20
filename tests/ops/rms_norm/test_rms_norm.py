@@ -559,3 +559,32 @@ def test_npu_frozen_weight_backward(variant: str, dtype: torch.dtype, strided_gr
     assert not weight.requires_grad
     assert weight.grad is None
     torch.testing.assert_close(weight, weight_before, atol=0, rtol=0)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16])
+def test_grouped_offset_npu_abi_on_cpu(monkeypatch, dtype):
+    import sys
+    from types import SimpleNamespace
+
+    from veomni.ops.kernels.rms_norm.offset import torch_npu as adapter
+
+    def native(x, unit, eps):
+        assert unit.shape == (4,) and torch.all(unit == 1)
+        rstd = (x.square().mean(-1, keepdim=True) + eps).rsqrt()
+        return x * rstd, rstd
+
+    def native_bwd(dy, x, unit, rstd):
+        return (dy - x * rstd.square() * (dy * x).mean(-1, keepdim=True)) * rstd, None
+
+    monkeypatch.setitem(
+        sys.modules, "torch_npu", SimpleNamespace(npu_rms_norm=native, npu_rms_norm_backward=native_bwd)
+    )
+    x = torch.randn(2, 3, 12).to(dtype).requires_grad_()
+    weight = torch.randn(12).to(dtype).requires_grad_()
+    got, saved = adapter.forward(x, weight, eps=1e-6, group_size=4)
+    grouped = x.float().unflatten(-1, (3, 4))
+    ref = (torch.nn.functional.rms_norm(grouped, (4,), eps=1e-6).reshape_as(x) * (1 + weight.float())).to(dtype)
+    dy = torch.randn_like(ref)
+    torch.testing.assert_close(got, ref)
+    for actual, expected in zip(adapter.backward(dy, saved), torch.autograd.grad(ref, (x, weight), dy), strict=True):
+        torch.testing.assert_close(actual, expected, atol=2e-6 if dtype == torch.float32 else 0.02, rtol=0.01)
