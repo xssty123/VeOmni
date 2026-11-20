@@ -1979,9 +1979,13 @@ def test_upstream_pybind_kernel_without_a_dispatcher_name_gets_no_sac_benefit():
     assert sac_replayed == full_replayed == 3
 
 
-def test_sac_reuses_late_registered_kernel_forward():
+@pytest.mark.parametrize("host_cache", [False, True])
+def test_sac_reuses_late_registered_kernel_forward(host_cache, monkeypatch):
+    from veomni.distributed import ascend_checkpoint_cache
+
     name = "veomni_sac_test.late_gdn.default"
-    contexts = recompute_utils._build_context_fn([name])
+    monkeypatch.setattr(ascend_checkpoint_cache, "HOST_CACHE_OPS", {name})
+    contexts = recompute_utils._build_context_fn([name], host_cache=host_cache)
     count = []
     with torch.library._scoped_library("veomni_sac_test", "FRAGMENT") as lib:
         lib.define("late_gdn(Tensor x) -> Tensor")

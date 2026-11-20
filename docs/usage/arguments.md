@@ -642,7 +642,7 @@ recompute in full, with a warning naming the reason:
 
 - `enable_reentrant=True` — torch takes no `context_fn` under reentrant
   checkpointing.
-- Activation offload owns the checkpoint boundary. Async activation offload can run together with explicit `save_ops: [attn, gdn]`: the outer hook offloads the block input and SAC retains selected operator outputs on device.
+- Activation offload owns the checkpoint boundary. Async activation offload can run together with explicit `save_ops: [attn, gdn]`: the outer hook offloads the block input. SAC also copies the stable FLA-NPU GDN and native NPU fusion-attention outputs to pinned host memory and restores them during replay.
 
 A third case is not about SAC but about reaching the blocks at all: a model that
 drives `torch.utils.checkpoint` itself (ltx2_3) leaves no entry point to

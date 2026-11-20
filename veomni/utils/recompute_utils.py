@@ -326,7 +326,7 @@ def _make_selective_policy(
     return policy
 
 
-def _build_context_fn(extra_op_names: Sequence[str] | None) -> Callable[[], tuple[Any, Any]]:
+def _build_context_fn(extra_op_names: Sequence[str] | None, *, host_cache=False) -> Callable[[], tuple[Any, Any]]:
     """Build the ``context_fn`` for ``torch.utils.checkpoint.checkpoint``."""
     exact_ops, failed = resolve_exact_ops(extra_op_names)
     if failed:
@@ -334,9 +334,12 @@ def _build_context_fn(extra_op_names: Sequence[str] | None) -> Callable[[], tupl
             f"cannot resolve extra selective op(s) {failed!r}; they will also be matched by exact overload name at execution"
         )
     logger.info_rank0(f"SAC enabled with {len(exact_ops)} exact attention ops plus the name-substring fallback")
-    return functools.partial(
-        torch.utils.checkpoint.create_selective_checkpoint_contexts, _make_selective_policy(exact_ops, failed)
-    )
+    factory = torch.utils.checkpoint.create_selective_checkpoint_contexts
+    if host_cache:
+        from ..distributed.ascend_checkpoint_cache import host_cache_contexts
+
+        factory = host_cache_contexts
+    return functools.partial(factory, _make_selective_policy(exact_ops, failed))
 
 
 # ---------------------------------------------------------------------------
@@ -390,6 +393,7 @@ def build_policy(
     save_ops: Sequence[str] | None = None,
     recompute_context: Callable[[], AbstractContextManager] | None = None,
     offload_active: bool = False,
+    offload_ascend_outputs: bool = False,
     compile_enabled: bool = False,
 ) -> RecomputePolicy:
     """Build the run's :class:`RecomputePolicy` from ``model.accelerator.gradient_checkpointing``.
@@ -480,7 +484,7 @@ def build_policy(
                 "the affected layers fall back to full recomputation"
             )
         else:
-            context_fn = _build_context_fn(extra_op_names)
+            context_fn = _build_context_fn(extra_op_names, host_cache=offload_ascend_outputs)
 
     if context_fn is not None and compile_enabled:
         logger.warning_once("torch.compile is enabled; SAC with torch.compile is unverified")
