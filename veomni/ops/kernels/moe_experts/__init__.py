@@ -34,6 +34,7 @@ from ...registry import register_op
 from .gpt_oss import eager as gpt_oss_eager
 from .gpt_oss import quack as gpt_oss_quack
 from .shared import unpermute
+from .standard import chunk_npu
 from .standard import deepgemm as standard_deepgemm
 from .standard import eager as standard_eager
 from .standard import mlu as standard_mlu
@@ -189,6 +190,15 @@ register_op(
         platforms=(NvidiaGpuPlatform(min_cc=90, max_cc=90), NvidiaGpuPlatform(min_cc=100, max_cc=100)),
     ),
     requires=("deep_gemm", "triton"),
+)
+
+register_op(
+    "moe_experts",
+    "standard",
+    "chunk_npu",
+    wrapper=chunk_npu.wrapper,
+    description="Two-chunk asynchronous expert dispatch and combine on Ascend",
+    requirement=NpuKernelRequirement(),
 )
 
 register_op(

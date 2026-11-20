@@ -1417,7 +1417,7 @@ _NPU_ALLOWED: Dict[str, frozenset] = {
     "kv_round_implementation": frozenset({"none"}),
     "load_balancing_loss_implementation": frozenset(),
     "cross_entropy_loss_implementation": frozenset({"chunk_loss", "cce_npu"}),
-    "moe_implementation": frozenset({"fused_npu"}),
+    "moe_implementation": frozenset({"fused_npu", "chunk_npu"}),
 }
 
 _NPU_REQUIRED: Dict[str, frozenset] = {
@@ -1425,7 +1425,7 @@ _NPU_REQUIRED: Dict[str, frozenset] = {
     "rms_norm_implementation": frozenset({"torch_npu"}),
     "rotary_pos_emb_implementation": frozenset({"torch_npu"}),
     "rotary_pos_emb_vision_implementation": frozenset({"torch_npu"}),
-    "moe_implementation": frozenset({"fused_npu"}),
+    "moe_implementation": frozenset({"fused_npu", "chunk_npu"}),
 }
 
 _AITER_ATTENTION_IMPLEMENTATIONS = frozenset(
@@ -1553,7 +1553,7 @@ class OpsImplementationConfig:
         default=None,
         metadata={
             "help": "MoE experts forward. 'fused_triton' (GPU SM70+ or MLU) | "
-            "'fused_quack' (GPU SM90+) | 'deepgemm_fp8' (SM90/SM100 FP8 training) | 'fused_npu' (NPU) | "
+            "'fused_quack' (GPU SM90+) | 'deepgemm_fp8' (SM90/SM100 FP8 training) | 'fused_npu' or 'chunk_npu' (NPU) | "
             "'fused_mlu' (MLU Apex grouped-GEMM) | 'eager'. "
             "Unset: 'fused_triton' on GPU, 'fused_npu' on NPU, 'fused_mlu' on MLU with Apex "
             "and 'fused_triton' otherwise."

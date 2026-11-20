@@ -168,6 +168,7 @@ _BUILTIN_ENTRIES = (
     ("moe_experts", "standard", "fused_quack", "cuda", _GPU_NVIDIA_SM90, ("quack",)),
     ("moe_experts", "standard", "qat", "cuda", _GPU_NVIDIA_SM90, ("tilelang", "triton")),
     ("moe_experts", "standard", "deepgemm_fp8", "cuda", _GPU_NVIDIA_SM90_OR_SM100, ("deep_gemm", "triton")),
+    ("moe_experts", "standard", "chunk_npu", "npu", _NPU, ()),
     ("moe_experts", "standard", "fused_npu", "npu", _NPU, ()),
     ("moe_experts", "standard", "fused_mlu", "mlu", _MLU, ("apex",)),
     ("moe_experts", "gpt_oss", "eager", "any", _ANY, ()),

@@ -239,7 +239,7 @@ def dispatch_preprocess(
             dtype=num_local_tokens_per_expert.dtype,
             device=num_local_tokens_per_expert.device,
         )
-        dist.all_gather_into_tensor(num_global_tokens_per_expert, num_local_tokens_per_expert, group=ep_group)
+        dist.all_gather_into_tensor(num_global_tokens_per_expert.view(-1), num_local_tokens_per_expert, group=ep_group)
 
     start_idx, end_idx = ep_rank * num_local_experts, (ep_rank + 1) * num_local_experts
     num_global_tokens_per_local_expert = num_global_tokens_per_expert[:, start_idx:end_idx].contiguous()
