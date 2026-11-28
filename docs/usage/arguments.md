@@ -421,6 +421,9 @@ group or learning rate is therefore a recipe choice beyond the reference, not a 
 | eval_path | `Optional[str]` | `None` | Path of the evaluation dataset. |
 | train_size | `int` | `10_000_000` | Number of tokens for training (used to compute steps under dynamic batch). |
 | train_sample | `int` | `10_000` | Number of samples for training (used to compute steps under non-dynamic batch). |
+| use_dummy_text | `bool` | `false` | Generate synthetic benchmark samples in place of loading the training path. |
+| num_dummy_images | `int` | `0` | Images per synthetic Qwen VLM sample; zero selects text only. |
+| dummy_vit_seqlen | `int` | `4096` | Pre-merge patch count per square synthetic image. See [synthetic Qwen VLM performance runs](multimodal_data_processing.md#synthetic-qwen-vlm-performance-runs). |
 | data_type | `Literal["plaintext", "conversation", "diffusion", "classification", "dpo"]` | `"conversation"` | Type of the training data. |
 | datasets_type | `str` | `"mapping"` | Single-source builder for a non-YAML `train_path`. Built-in values: `"mapping"`, `"iterable"`. |
 | dataset_repeat | `bool` | `false` | Iterable-only. If true, replay the stream so one epoch can reach `train.max_steps` when the dump is shorter than that cap. If false, one pass ends the epoch. Each pass drops the last incomplete DP round. Mapping ignores this. |

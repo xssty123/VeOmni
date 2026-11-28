@@ -23,6 +23,9 @@ model:
   chat_template: chatml
 
 data:
+  # Synthetic 4K LLM / 1K ViT benchmark (one image per sample):
+  # set use_dummy_text: true, num_dummy_images: 1, dummy_vit_seqlen: 1024,
+  # max_seq_len: 4096 and train.dyn_bsz: false.
   train_path: tulu-3-sft-mixture/data
   data_type: conversation
   max_seq_len: 16384

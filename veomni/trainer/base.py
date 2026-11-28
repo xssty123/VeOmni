@@ -446,14 +446,18 @@ class BaseTrainer(Stateful, ABC):
 
     def _build_dataset(self):
         args: VeOmniArguments = self.args
-        # Build dataset
-        self.train_dataset = build_dataset(
-            dataset_name=args.data.dataset_name,
-            transform=self.data_transform,
-            seed=args.train.seed,
-            shuffle=args.data.dataloader.shuffle,
-            **asdict(args.data),
-        )
+        if args.data.use_dummy_text:
+            from ..data.dummy_dataset import build_dummy_benchmark_dataset
+
+            self.train_dataset = build_dummy_benchmark_dataset(args.data, self.model)
+        else:
+            self.train_dataset = build_dataset(
+                dataset_name=args.data.dataset_name,
+                transform=self.data_transform,
+                seed=args.train.seed,
+                shuffle=args.data.dataloader.shuffle,
+                **asdict(args.data),
+            )
         dataset_length = None if not hasattr(self.train_dataset, "__len__") else len(self.train_dataset)
         if args.data.datasets_type == "mapping":
             dataset_length = dataset_length / args.model.accelerator.dp_size

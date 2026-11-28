@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+from math import isqrt
 from typing import Any, Dict, List
 
 import torch
@@ -129,6 +130,69 @@ class DummyQwen4ExpDataset(DummyQwenVLDataset):
         example["input_ids"].masked_fill_(multimodal_mask, 0)
         example["labels"].masked_fill_(multimodal_mask, IGNORE_INDEX)
         return [example]
+
+
+class DummyQwenBenchmarkDataset(DummyTextDataset):
+    """Fixed-length Qwen VLM samples with the same masks and M-RoPE layout as the VLM transform."""
+
+    def __init__(self, data, model):
+        super().__init__(data.train_sample, data.max_seq_len)
+        config = model.model_config
+        self.vocab_size = min(self.vocab_size, config.text_config.vocab_size)
+        self.image_mask = torch.zeros(self.seq_length, dtype=torch.bool)
+        self.video_mask = torch.zeros_like(self.image_mask)
+        self.position_ids = torch.arange(self.seq_length).expand(3, -1)
+        self.num_images = data.num_dummy_images
+        if self.num_images == 0:
+            return
+
+        vision = config.vision_config
+        patches = data.dummy_vit_seqlen
+        side = isqrt(max(0, patches))
+        merge = vision.spatial_merge_size
+        if patches <= 0 or side * side != patches or side % merge:
+            raise ValueError(f"dummy_vit_seqlen must be a positive square with grid side divisible by {merge}.")
+        image_tokens = patches // merge**2
+        # A leading text token distinguishes each image's M-RoPE span. Leave at least one prediction target.
+        block = 1 + image_tokens
+        if self.num_images * block >= self.seq_length:
+            raise ValueError(
+                f"max_seq_len must be at least {self.num_images * block + 1} for this dummy image layout."
+            )
+        self.image_mask[: self.num_images * block].view(self.num_images, block)[:, 1:] = True
+        self.image_grid_thw = torch.tensor([[1, side, side]] * self.num_images)
+        self.pixel_shape = (
+            self.num_images * patches,
+            vision.in_channels * vision.temporal_patch_size * vision.patch_size**2,
+        )
+        # Only token types and grids affect these positions; compute once per dataset, before spawning workers.
+        positions = model.unwrapped_module.get_position_id_func()(
+            input_ids=torch.zeros(1, self.seq_length, dtype=torch.long),
+            mm_token_type_ids=self.image_mask.long().unsqueeze(0),
+            image_grid_thw=self.image_grid_thw,
+        )
+        self.position_ids = positions["position_ids"].squeeze(1)
+
+    def __getitem__(self, index):
+        sample = super().__getitem__(index)[0]
+        sample.update(position_ids=self.position_ids, image_mask=self.image_mask, video_mask=self.video_mask)
+        if self.num_images:
+            sample["input_ids"].masked_fill_(self.image_mask, 0)
+            sample["labels"].masked_fill_(self.image_mask, IGNORE_INDEX)
+            sample["image_grid_thw"] = self.image_grid_thw
+            sample["pixel_values"] = torch.rand(self.pixel_shape, dtype=torch.float32)
+        return [sample]
+
+
+def build_dummy_benchmark_dataset(data, model):
+    config = model.model_config
+    if config.model_type in ("qwen4_exp", "qwen3_5", "qwen3_5_moe") and getattr(config, "vision_config", None):
+        return DummyQwenBenchmarkDataset(data, model)
+    if data.num_dummy_images:
+        raise ValueError("Dummy images require a Qwen4-Exp or Qwen3.5 vision-language model.")
+    dataset = DummyTextDataset(data.train_sample, data.max_seq_len)
+    dataset.vocab_size = min(dataset.vocab_size, config.get_text_config().vocab_size)
+    return dataset
 
 
 class DummyQwenOmniDataset(Dataset):

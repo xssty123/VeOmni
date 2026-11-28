@@ -5,9 +5,11 @@ import torch
 
 from scripts.ci.accelerator.launch_plan import LaunchSpec
 from tests.tools.training_utils import make_eager_ops_config, unbuilt_runtime
+from veomni.data.data_collator import MainCollator
 from veomni.models import build_foundation_model
 from veomni.models.model_runtime import VeOmniModelRuntime
 from veomni.trainer import vlm_trainer
+from veomni.trainer.base import BaseTrainer
 from veomni.trainer.vlm_trainer import (
     VeOmniVLMArguments,
     VLMMDataArguments,
@@ -15,6 +17,7 @@ from veomni.trainer.vlm_trainer import (
     VLMModelRuntime,
     _get_vlm_visual_module,
 )
+from veomni.utils.constants import IGNORE_INDEX
 
 
 pytestmark = pytest.mark.launch_plan(provider=LaunchSpec(device="cpu"))
@@ -146,3 +149,43 @@ def test_freeze_vit_on_vlm_model(config_path, freeze_vit):
     runtime._freeze_model_module()
 
     assert all(param.requires_grad is not freeze_vit for param in visual.parameters())
+
+
+@pytest.mark.parametrize("num_images", [0, 1, 2])
+def test_qwen4_exp_dummy_benchmark_packing(num_images):
+    config_path = "./tests/toy_config/qwen4_exp_toy/config.json"
+    ops = make_eager_ops_config()
+    model = build_foundation_model(
+        config_path=config_path, weights_path=None, torch_dtype="float32", init_device="meta", ops_implementation=ops
+    )
+    args = VeOmniVLMArguments(
+        model=VLMMModelArguments(config_path=config_path, ops_implementation=ops),
+        data=VLMMDataArguments(
+            train_path="unused.yaml",
+            use_dummy_text=True,
+            num_dummy_images=num_images,
+            dummy_vit_seqlen=1024,
+            max_seq_len=4096,
+            train_sample=16,
+        ),
+    )
+    base = BaseTrainer.__new__(BaseTrainer)
+    base.args = args
+    base.model = SimpleNamespace(model_config=model.config, unwrapped_module=model)
+    base._build_dataset()
+    assert len(base.train_dataset) == 16
+    assert not args.data.enable_multisource
+    samples = [base.train_dataset[i][0] for i in range(2)]
+    batch = MainCollator(metadata_collate_func=model.get_metadata_collate_func())(samples)
+    assert batch["position_ids"].shape == (1, 3, 8192)
+    assert batch["cu_seq_lens_q"].tolist() == [0, 4096, 8192]
+    assert not batch["video_mask"].any()
+    assert batch["image_mask"].sum().item() == 2 * num_images * 256
+    if num_images:
+        assert batch["image_grid_thw"].tolist() == [[1, 32, 32]] * (2 * num_images)
+        assert batch["pixel_values"].shape == (2 * num_images * 1024, 3 * 2 * 4**2)
+        assert batch["input_ids"][batch["image_mask"]].eq(0).all()
+        assert batch["labels"][batch["image_mask"]].eq(IGNORE_INDEX).all()
+        assert batch["multimodal_metadata"]["vit_image_max_seqlen"] == 1024
+    else:
+        assert "pixel_values" not in batch

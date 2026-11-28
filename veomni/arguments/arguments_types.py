@@ -2315,9 +2315,20 @@ class DataArguments:
         metadata={"help": "Whether to ignore exceptions when loading data. Defaults to ``False``"},
     )
     dataloader: DataloaderConfig = field(default_factory=DataloaderConfig)
+    use_dummy_text: bool = field(
+        default=False, metadata={"help": "Generate synthetic benchmark samples instead of reading train_path."}
+    )
+    num_dummy_images: int = field(
+        default=0, metadata={"help": "Images per synthetic sample; zero selects a text-only workload."}
+    )
+    dummy_vit_seqlen: int = field(default=4096, metadata={"help": "Pre-merge ViT patches per synthetic square image."})
 
     def __post_init__(self):
-        self.enable_multisource = self.train_path.endswith(".yaml")
+        if self.use_dummy_text:
+            if self.num_dummy_images < 0 or self.train_sample <= 0 or self.max_seq_len <= 0:
+                raise ValueError("Dummy data requires num_dummy_images >= 0, train_sample > 0 and max_seq_len > 0.")
+            self.datasets_type = "mapping"
+        self.enable_multisource = not self.use_dummy_text and self.train_path.endswith(".yaml")
 
         if self.enable_multisource:
             self.dataset_name = self.multisource_datasets_type

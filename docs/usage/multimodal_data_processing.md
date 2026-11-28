@@ -225,3 +225,30 @@ data:
     use_audio_in_video: false
     sample_rate: 16000
 ```
+
+## Synthetic Qwen VLM performance runs
+
+The Qwen4-Exp and Qwen3.5 VLM trainers can generate random token IDs and image
+patch tensors directly. For one 4096-position LLM sample with one 1024-patch
+image per data-parallel replica and forward pass, apply these overrides to your
+working VLM training configuration:
+
+```bash
+bash train.sh tasks/train_vlm.py configs/text/qwen4exp.yaml \
+    --data.use_dummy_text true --data.num_dummy_images 1 \
+    --data.dummy_vit_seqlen 1024 --data.max_seq_len 4096 \
+    --train.dyn_bsz false --train.micro_batch_size 1
+```
+
+`data.train_path` is still a required configuration field; the dummy dataset
+does not read it. `data.train_sample` sets the number of synthetic examples.
+With zero images (the default), samples contain only text. For image runs,
+`dummy_vit_seqlen` counts ViT patches **per image before spatial merging**.
+Its square root must be divisible by the checkpoint's spatial merge size.
+With merge size 2, 1024 patches give grid `[1,32,32]` and 256 visual positions
+within the 4096 LLM positions. The default of 4096 patches reproduces the
+old benchmark's 64-by-64 grid. To reproduce its 10-image workload, use
+`num_dummy_images=10`, `dummy_vit_seqlen=4096`, and `max_seq_len=16384`.
+Use the same global batch size, vision tower freeze setting and device peak
+when comparing MFU across runs. These samples bypass JPEG decoding and
+tokenization; use the file-backed dataset to include that preprocessing cost.
